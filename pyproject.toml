@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "arcana-go2"
+version = "0.1.0"
+description = "python convenience class and utils for control a unitree go2 dog"
+authors = ["Swapnil Patel <swapnilpatel95@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+pydantic = "^2.11"
+httpx = "*"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

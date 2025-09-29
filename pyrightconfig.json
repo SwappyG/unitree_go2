@@ -1,0 +1,19 @@
+{
+  "exclude": [
+    "**/build",
+    "**/__pycache__",
+   ],
+
+  "reportMissingImports": true,
+  "reportMissingTypeStubs": false,
+  "reportUnknownArgumentType": false,
+  "reportMissingParameterType": false,
+  "reportUnknownParameterType": false,
+  "reportUnknownVariableType": false,
+  "reportUnknownLambdaType": false,
+  "reportUnknownMemberType": false,
+  "reportUnusedImport": false,
+
+  "typeCheckingMode": "strict",
+  "useLibraryCodeForTypes": true
+}
