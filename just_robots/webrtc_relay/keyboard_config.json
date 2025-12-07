@@ -1,0 +1,22 @@
+{
+  "key_bindings": {
+    "forward": {"qt": "Key_W", "terminal": "w"},
+    "backward": {"qt": "Key_S", "terminal": "s"},
+    "strafe_left": {"qt": "Key_A", "terminal": "a"},
+    "strafe_right": {"qt": "Key_D", "terminal": "d"},
+    "rotate_left": {"qt": "Key_Left", "terminal": "left"},
+    "rotate_right": {"qt": "Key_Right", "terminal": "right"},
+    "stop": {"qt": "Key_Space", "terminal": " "},
+    "quit": {"qt": "Key_P", "terminal": "q"}
+  },
+  "velocity": {
+    "linear": 0.25,
+    "rotation": 0.50
+  },
+  "ramp": {
+    "ramp_time_ms": 250,
+    "update_interval_ms": 50,
+    "ramp_update_interval_ms": 20
+  }
+}
+
