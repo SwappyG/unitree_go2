@@ -1,10 +1,11 @@
-from aiortc import MediaStreamTrack  # type: ignore
 import asyncio
-from av import VideoFrame  # pyright: ignore[reportPrivateImportUsage]
-from fractions import Fraction
 import math
-import numpy as np
 import time
+from fractions import Fraction
+
+import numpy as np
+from aiortc import MediaStreamTrack
+from av.video.frame import VideoFrame
 
 
 class MockGo2VideoTrack(MediaStreamTrack):
@@ -17,8 +18,8 @@ class MockGo2VideoTrack(MediaStreamTrack):
         self.fps = fps
         self.enabled = False
         self._t0 = time.time()
-        self._frame_index = 0                # <— add this
-        self._time_base = Fraction(1, fps)   # <— and this
+        self._frame_index = 0
+        self._time_base = Fraction(1, fps)
 
     async def recv(self) -> VideoFrame:
         await asyncio.sleep(1 / self.fps)
@@ -29,11 +30,14 @@ class MockGo2VideoTrack(MediaStreamTrack):
             y = np.linspace(0, 255, self.height, dtype=np.uint8)
             xx, yy = np.meshgrid(x, y)
             phase = int((math.sin(t) * 0.5 + 0.5) * 255)
-            img = np.stack([
-                (xx + phase) % 256,
-                (yy + (phase // 2)) % 256,
-                ((xx // 2 + yy // 2 + phase) % 256),
-            ], axis=2).astype(np.uint8)
+            img = np.stack(
+                [
+                    (xx + phase) % 256,
+                    (yy + (phase // 2)) % 256,
+                    ((xx // 2 + yy // 2 + phase) % 256),
+                ],
+                axis=2,
+            ).astype(np.uint8)
         else:
             img = np.zeros((self.height, self.width, 3), dtype=np.uint8)
 
