@@ -1,0 +1,4 @@
+[submodule "go2_ros2_sdk"]
+	path = go2_ros2_sdk
+	url = git@github.com:SwappyG/go2_ros2_sdk.git
+	branch = remove-webrtc-relay
