@@ -1,4 +1,17 @@
 {
+    "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+            "source.organizeImports.ruff": "explicit"
+        }   
+    },
+
+    "ruff.enable": true,
+    "ruff.lint.enable": true,
+    "pylint.enabled": false,
+
+
     "editor.defaultFormatter": "ms-python.black-formatter",
     "black-formatter.args": [
         "--line-length",
