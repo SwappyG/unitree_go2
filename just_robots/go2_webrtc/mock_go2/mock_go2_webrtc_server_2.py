@@ -1,81 +1,93 @@
 # This is a mock go2 webrtc server that reads from a webcam and sends the frames to the client.
 
-from aiohttp import web
-from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack  # type: ignore
-from aiortc.contrib.media import MediaBlackhole
 import asyncio
 import base64
-from Crypto.PublicKey import RSA
-from Crypto.Cipher import AES, PKCS1_v1_5
 import hashlib
 import json
 import logging
+import threading
 import typing as t
 import uuid
+from fractions import Fraction
+
 import cv2
 import numpy as np
+from aiohttp import web
+from aiortc import (
+    MediaStreamTrack,
+    RTCPeerConnection,
+    RTCSessionDescription,
+)
+from aiortc.contrib.media import MediaBlackhole
 from av import VideoFrame  # pyright: ignore[reportPrivateImportUsage]
-from fractions import Fraction
-import threading
-
+from Crypto.Cipher import AES, PKCS1_v1_5
+from Crypto.PublicKey import RSA
 from go2_robot_sdk.domain.constants.webrtc_topics import RTC_TOPIC
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 class WebcamVideoTrack(MediaStreamTrack):
     """Video track that reads from webcam and displays it locally."""
+
     kind = "video"
 
-    def __init__(self, camera_index: int = 0, width: int = 640, height: int = 480, fps: int = 30):
+    def __init__(
+        self, camera_index: int = 0, width: int = 640, height: int = 480, fps: int = 30
+    ):
         super().__init__()
         self.camera_index = camera_index
         self.width = width
         self.height = height
         self.fps = fps
         self.enabled = False
-        
+
         # Open webcam
         logger.info(f"Attempting to open camera {camera_index}...")
         self.cap = cv2.VideoCapture(camera_index)
         if not self.cap.isOpened():
-            raise RuntimeError(f"Failed to open camera {camera_index}. Make sure the camera is connected and not being used by another application.")
-        
+            raise RuntimeError(
+                f"Failed to open camera {camera_index}. Make sure the camera is connected and not being used by another application."
+            )
+
         # Set camera properties
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         self.cap.set(cv2.CAP_PROP_FPS, fps)
-        
+
         # Test reading a frame to verify webcam works
         ret, test_frame = self.cap.read()
         if not ret or test_frame is None:
             self.cap.release()
-            raise RuntimeError(f"Camera {camera_index} opened but failed to read frames. Check camera permissions and availability.")
-        
+            raise RuntimeError(
+                f"Camera {camera_index} opened but failed to read frames. Check camera permissions and availability."
+            )
+
         actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
-        logger.info(f"Camera {camera_index} opened successfully. Actual resolution: {actual_width}x{actual_height}, FPS: {actual_fps}")
+        logger.info(
+            f"Camera {camera_index} opened successfully. Actual resolution: {actual_width}x{actual_height}, FPS: {actual_fps}"
+        )
         logger.info(f"Test frame read: {test_frame.shape}")
-        
+
         # Frame timing
         self._frame_index = 0
         self._time_base = Fraction(1, fps)
         self._frame_interval = 1.0 / fps
-        
+
         # Display window
         self._display_enabled = True
         self._display_thread = None
         self._latest_frame = None
         self._frame_lock = threading.Lock()
-        
+
         # Background frame reading task
         self._frame_reading_task = None
         self._frame_reading_running = False
-        
+
         logger.info(f"WebcamVideoTrack initialized: {width}x{height} @ {fps}fps")
-        
+
         # Start background frame reading
         self._start_frame_reading()
 
@@ -84,27 +96,31 @@ class WebcamVideoTrack(MediaStreamTrack):
         window_name = "Webcam Feed (press 'q' to quit display)"
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
         logger.info(f"Display window '{window_name}' created")
-        
+
         frame_count = 0
         try:
             while self._display_enabled:
                 with self._frame_lock:
                     frame = self._latest_frame
-                
+
                 if frame is not None:
                     cv2.imshow(window_name, frame)
                     frame_count += 1
-                    if frame_count % 30 == 0:  # Log every 30 frames (~1 second at 30fps)
-                        logger.debug(f"Displayed {frame_count} frames, latest frame shape: {frame.shape}")
+                    if (
+                        frame_count % 30 == 0
+                    ):  # Log every 30 frames (~1 second at 30fps)
+                        logger.debug(
+                            f"Displayed {frame_count} frames, latest frame shape: {frame.shape}"
+                        )
                 else:
                     if frame_count == 0:
                         logger.warning("No frames available for display yet")
-                
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+
+                if cv2.waitKey(1) & 0xFF == ord("q"):
                     logger.info("Display window closed by user")
                     self._display_enabled = False
                     break
-                
+
                 # Small sleep to avoid busy waiting
                 threading.Event().wait(0.033)  # ~30fps display rate
         except Exception as e:
@@ -116,17 +132,22 @@ class WebcamVideoTrack(MediaStreamTrack):
     async def recv(self) -> VideoFrame:
         """Read frame from webcam and return as VideoFrame."""
         # Start background frame reading if not already started
-        if self._frame_reading_task is None or (hasattr(self._frame_reading_task, 'done') and self._frame_reading_task.done()):
+        if self._frame_reading_task is None or (
+            hasattr(self._frame_reading_task, "done")
+            and self._frame_reading_task.done()
+        ):
             if self._frame_reading_running:
                 try:
                     loop = asyncio.get_running_loop()
-                    self._frame_reading_task = loop.create_task(self._frame_reading_loop())
+                    self._frame_reading_task = loop.create_task(
+                        self._frame_reading_loop()
+                    )
                     logger.info("Started background frame reading task from recv()")
                 except RuntimeError:
                     pass
-        
+
         await asyncio.sleep(self._frame_interval)
-        
+
         if not self.enabled:
             # Return black frame when disabled
             img = np.zeros((self.height, self.width, 3), dtype=np.uint8)
@@ -134,22 +155,29 @@ class WebcamVideoTrack(MediaStreamTrack):
             # Get the latest frame from background reading (or read directly if not available)
             with self._frame_lock:
                 frame = self._latest_frame
-            
+
             if frame is not None:
                 # Convert BGR to RGB for VideoFrame
                 img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
+
                 # Log periodically to verify frames are being sent
                 if self._frame_index % (self.fps * 5) == 0:  # Every 5 seconds
-                    logger.info(f"Webcam frame #{self._frame_index} sent over WebRTC: {frame.shape}")
+                    logger.info(
+                        f"Webcam frame #{self._frame_index} sent over WebRTC: {frame.shape}"
+                    )
             else:
                 # Fallback: try to read directly if background reading hasn't started yet
                 if self._frame_index == 0:
-                    logger.warning("No frame available from background reading, reading directly...")
+                    logger.warning(
+                        "No frame available from background reading, reading directly..."
+                    )
                 if self.cap.isOpened():
                     ret, frame = self.cap.read()
                     if ret and frame is not None:
-                        if frame.shape[1] != self.width or frame.shape[0] != self.height:
+                        if (
+                            frame.shape[1] != self.width
+                            or frame.shape[0] != self.height
+                        ):
                             frame = cv2.resize(frame, (self.width, self.height))
                         img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                         # Update latest frame for display
@@ -159,30 +187,39 @@ class WebcamVideoTrack(MediaStreamTrack):
                         img = np.zeros((self.height, self.width, 3), dtype=np.uint8)
                 else:
                     img = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-        
+
         # Create VideoFrame
         video_frame = VideoFrame.from_ndarray(img, format="rgb24")
         video_frame.pts = self._frame_index
         video_frame.time_base = self._time_base
         self._frame_index += 1
-        
+
         return video_frame
 
     def _start_frame_reading(self):
         """Start background task to continuously read frames from webcam."""
-        if self._frame_reading_task is None or (hasattr(self._frame_reading_task, 'done') and self._frame_reading_task.done()):
+        if self._frame_reading_task is None or (
+            hasattr(self._frame_reading_task, "done")
+            and self._frame_reading_task.done()
+        ):
             self._frame_reading_running = True
             try:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
-                    self._frame_reading_task = loop.create_task(self._frame_reading_loop())
+                    self._frame_reading_task = loop.create_task(
+                        self._frame_reading_loop()
+                    )
                     logger.info("Started background frame reading task")
                 else:
                     # If no event loop is running, we'll start it when recv() is first called
-                    logger.info("Event loop not running yet, will start frame reading when recv() is called")
+                    logger.info(
+                        "Event loop not running yet, will start frame reading when recv() is called"
+                    )
             except RuntimeError:
                 # No event loop in this thread, will start when recv() is called
-                logger.info("No event loop available, will start frame reading when recv() is called")
+                logger.info(
+                    "No event loop available, will start frame reading when recv() is called"
+                )
 
     async def _frame_reading_loop(self):
         """Continuously read frames from webcam in background."""
@@ -193,13 +230,13 @@ class WebcamVideoTrack(MediaStreamTrack):
                     logger.error("Webcam is not opened in frame reading loop")
                     await asyncio.sleep(1.0)
                     continue
-                
+
                 ret, frame = self.cap.read()
                 if ret and frame is not None:
                     # Resize if needed
                     if frame.shape[1] != self.width or frame.shape[0] != self.height:
                         frame = cv2.resize(frame, (self.width, self.height))
-                    
+
                     # Update latest frame for display (BGR format for OpenCV)
                     with self._frame_lock:
                         self._latest_frame = frame
@@ -213,7 +250,7 @@ class WebcamVideoTrack(MediaStreamTrack):
                         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
                         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
                         self.cap.set(cv2.CAP_PROP_FPS, self.fps)
-                
+
                 await asyncio.sleep(self._frame_interval)
             except Exception as e:
                 logger.error(f"Error in frame reading loop: {e}", exc_info=True)
@@ -223,7 +260,9 @@ class WebcamVideoTrack(MediaStreamTrack):
         """Start the display thread."""
         if self._display_thread is None or not self._display_thread.is_alive():
             self._display_enabled = True
-            self._display_thread = threading.Thread(target=self._display_loop, daemon=True)
+            self._display_thread = threading.Thread(
+                target=self._display_loop, daemon=True
+            )
             self._display_thread.start()
             logger.info("Started webcam display window")
 
@@ -240,7 +279,7 @@ class WebcamVideoTrack(MediaStreamTrack):
         self._frame_reading_running = False
         if self._frame_reading_task and not self._frame_reading_task.done():
             self._frame_reading_task.cancel()
-        
+
         self.stop_display()
         if self.cap.isOpened():
             self.cap.release()
@@ -313,12 +352,14 @@ def rsa_decrypt_aes_key_b64(enc_b64: str, rsa_private: RSA.RsaKey) -> str:
 def make_lowstate() -> dict[str, t.Any]:
     motors = []
     for _ in range(12):
-        motors.append({
-            "q": 0.0,
-            "qd": 0.0,
-            "qdd": 0.0,
-            "tau": 0.0,
-        })
+        motors.append(
+            {
+                "q": 0.0,
+                "qd": 0.0,
+                "qdd": 0.0,
+                "tau": 0.0,
+            }
+        )
     return {"motor_state": motors}
 
 
@@ -383,8 +424,16 @@ class MockGo2EncryptedServerWithWebcam:
       - Handles validation and subscriptions
     """
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 9991, publish_hz: float = 0.2, 
-                 camera_index: int = 0, video_width: int = 640, video_height: int = 480, video_fps: int = 30):
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 9991,
+        publish_hz: float = 0.2,
+        camera_index: int = 0,
+        video_width: int = 640,
+        video_height: int = 480,
+        video_fps: int = 30,
+    ):
         self.host = host
         self.port = port
         self.publish_interval = 1.0 / publish_hz
@@ -392,7 +441,9 @@ class MockGo2EncryptedServerWithWebcam:
         # RSA keypair for the session
         self._rsa_key = RSA.generate(2048)
         self._rsa_pub_pem_bytes = self._rsa_key.publickey().export_key(format="PEM")
-        self._rsa_pub_pem_b64 = base64.b64encode(self._rsa_pub_pem_bytes).decode("utf-8")
+        self._rsa_pub_pem_b64 = base64.b64encode(self._rsa_pub_pem_bytes).decode(
+            "utf-8"
+        )
 
         # Path ending for validation
         self._prefix10 = "JJJJJJJJJJ"
@@ -405,22 +456,26 @@ class MockGo2EncryptedServerWithWebcam:
                 camera_index=camera_index,
                 width=video_width,
                 height=video_height,
-                fps=video_fps
+                fps=video_fps,
             )
             # Enable video by default
             self._video_track.enabled = True
             # Start display window
             self._video_track.start_display()
-            logger.info(f"Webcam video track created and enabled. Camera {camera_index} is ready.")
+            logger.info(
+                f"Webcam video track created and enabled. Camera {camera_index} is ready."
+            )
         except Exception as e:
             logger.error(f"Failed to initialize webcam: {e}")
             raise
 
         self._app = web.Application()
-        self._app.add_routes([
-            web.post("/con_notify", self.on_con_notify),
-            web.post(r"/con_ing_{ending}", self.on_con_ing),
-        ])
+        self._app.add_routes(
+            [
+                web.post("/con_notify", self.on_con_notify),
+                web.post(r"/con_ing_{ending}", self.on_con_ing),
+            ]
+        )
 
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
@@ -526,7 +581,11 @@ class MockGo2EncryptedServerWithWebcam:
                             self._validated[pc] = True
                             logger.info("validation accepted (encrypted key matched)")
                             try:
-                                channel.send(json.dumps({"type": "validation", "data": "Validation Ok."}))
+                                channel.send(
+                                    json.dumps(
+                                        {"type": "validation", "data": "Validation Ok."}
+                                    )
+                                )
                             except Exception as e:
                                 logger.warning(f"Failed to send validation ack: {e}")
                             self._start_publisher(pc, channel)
@@ -536,7 +595,11 @@ class MockGo2EncryptedServerWithWebcam:
                         validation_key = uuid.uuid4().hex
                         self._pending_validation[pc] = validation_key
                         try:
-                            channel.send(json.dumps({"type": "validation", "data": validation_key}))
+                            channel.send(
+                                json.dumps(
+                                    {"type": "validation", "data": validation_key}
+                                )
+                            )
                             logger.info("Re-sent validation key to client")
                         except Exception as e:
                             logger.warning(f"Failed to send validation key: {e}")
@@ -571,11 +634,15 @@ class MockGo2EncryptedServerWithWebcam:
         pc.addTrack(self._video_track)
 
         # Finish SDP
-        await pc.setRemoteDescription(RTCSessionDescription(sdp=remote_sdp, type=remote_type))
+        await pc.setRemoteDescription(
+            RTCSessionDescription(sdp=remote_sdp, type=remote_type)
+        )
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)  # type: ignore
 
-        answer_json = json.dumps({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
+        answer_json = json.dumps(
+            {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+        )
         # 4) AES-encrypt answer and return as plain text
         enc_answer = aes_ecb_encrypt_base64_str(answer_json, aes_key)
         return web.Response(text=enc_answer, content_type="text/plain")
@@ -640,7 +707,9 @@ class MockGo2EncryptedServerWithWebcam:
         await self._runner.setup()
         self._site = web.TCPSite(self._runner, self.host, self.port)
         await self._site.start()
-        logger.info(f"MockGo2EncryptedServerWithWebcam listening on http://{self.host}:{self.port}")
+        logger.info(
+            f"MockGo2EncryptedServerWithWebcam listening on http://{self.host}:{self.port}"
+        )
 
     async def stop(self):
         for pc in list(self._pcs):
@@ -659,14 +728,26 @@ class MockGo2EncryptedServerWithWebcam:
 # ------------------------------
 async def main():
     import argparse
+
     parser = argparse.ArgumentParser(description="Mock GO2 WebRTC server with webcam")
     parser.add_argument("--host", default="127.0.0.1", help="Server host")
     parser.add_argument("--port", type=int, default=9991, help="Server port")
-    parser.add_argument("--camera", type=int, default=0, help="Camera index (default: 0)")
-    parser.add_argument("--width", type=int, default=640, help="Video width (default: 640)")
-    parser.add_argument("--height", type=int, default=480, help="Video height (default: 480)")
+    parser.add_argument(
+        "--camera", type=int, default=0, help="Camera index (default: 0)"
+    )
+    parser.add_argument(
+        "--width", type=int, default=640, help="Video width (default: 640)"
+    )
+    parser.add_argument(
+        "--height", type=int, default=480, help="Video height (default: 480)"
+    )
     parser.add_argument("--fps", type=int, default=30, help="Video FPS (default: 30)")
-    parser.add_argument("--publish-hz", type=float, default=0.2, help="Publish frequency in Hz (default: 0.2)")
+    parser.add_argument(
+        "--publish-hz",
+        type=float,
+        default=0.2,
+        help="Publish frequency in Hz (default: 0.2)",
+    )
     args = parser.parse_args()
 
     srv = MockGo2EncryptedServerWithWebcam(
@@ -676,9 +757,9 @@ async def main():
         camera_index=args.camera,
         video_width=args.width,
         video_height=args.height,
-        video_fps=args.fps
+        video_fps=args.fps,
     )
-    
+
     try:
         await srv.start()
         logger.info("Server started. Press Ctrl+C to stop.")
@@ -692,4 +773,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-

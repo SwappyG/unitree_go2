@@ -1,0 +1,95 @@
+# --- Core settings ---------------------------------------------------------
+
+# Optional, but usually nice to set explicitly
+line-length = 100
+target-version = "py310"
+
+# --- Lint rule selection ---------------------------------------------------
+
+include = [
+    "pyproject.toml",
+    "just_robots/webrtc_relay/**",
+]
+
+exclude = [
+    "go2_ros2_sdk/**",
+    "just_robots/arcana_go2/**",
+]
+
+[lint]
+select = [
+    "ALL"
+]
+
+ignore = [
+    # Annotations for __init__, __enter__, __exit__, *args, **kwargs are annoying and not needed
+    "ANN204", "ANN401", "ANN002", "ANN003", "ANN201", "ANN202",
+    "D", # pydocstring, lots of annoying things related to docstring formatting
+    "W", # pycodestyle, lots of opinionated warnings, all of which should be dealt by the formatter
+    "Q", # opinionated about single and double quotes. again, formatter should deal with this
+    "FBT", # opinionated about booleans. consider enabling eventually
+    "TD", "FIX", # warnings about todos, spammy and cumbersome
+    "SIM", # suggests simplifications. kind of opinionated and not really important. Spammy too.
+    "PERF", # too much work to deal with right now
+    
+    # stuff formatter should fix, leave alone if formatter doesn't fix
+    "I001", # import sorting. 
+    "E501", # line-too-long
+    "COM812", # missing-trailing-comma
+
+    # too-many-X
+    "PLR0911", "PLR0912", "PLR0913", "PLR0914", "PLR0915", "PLR0916", "PLR0917",
+    "PLR1714", # merge comparisions
+
+    "TRY003", # don't use exception messages, seems like a bad rule 
+    "TRY300", # else-suggestion. way too opinionated
+    
+    "PIE790", # unnecessary-pass-statement, its nice visually to include a pass or ... sometimes
+    
+    # rules about f-strings. kind of annoying to maintain
+    "F541", "G004", "EM101", "EM102", # f-string without args / f-strings in logging
+    
+    # return statement related. opinionated, sometimes its nice to name things or be explicit
+    "RET504", # unnecessary assign before return. Sometimes its nice to name something before returning
+    "RET501", # don't return None, useless
+
+    "TC006", # use quotes in typing.cast, purely stylistic
+    "C901", # too many branches, seems unnecessary
+    "N818", # no-Error-suffix on new exceptions. It's better we don't do this to avoid collisions with builtins
+    
+    # pytest
+    "PT003", # warning that specifying scope=function is redunant. Sometimes its nice to be explicit
+
+    "TC001", "TC002", "TC003",
+
+    # Things to enable when we reach some level of sophistication
+    # "TC001", "TC002", "TC003", # improves import hygiene
+    # "PLR2004", # magic value comparison
+    # "PYI034", # use Self return instead of hardcoding
+    # "BLE001", # broad exception caught. This is bad, but work to implement consistently
+    # SIM
+    # ERA001, # commented out code detector. we don't really want messy commented out code in our codebase
+    # "PERF", # flags non-performant code patterns. good to eliminate these
+    # "PT011" # broad raises in pytests could be error prone. Add once we start writing more tests
+    # FBT, # this catches some bad usages of booleans in functions
+]
+
+[lint.per-file-ignores]
+"**/tests/*" = [
+    # Ignore specific rules
+    "S101",   # Use of assert
+    "ANN001",  # arg annotation
+    "ARG001",  # unused args
+    "S110", # try-except-pass
+    "PLR2004", # magic numbers
+    "T201", # print is ok
+]
+"**/conftest.py" = [
+    # Ignore specific rules
+    "S101",   # Use of assert
+    "ANN001",  # arg annotation
+    "ARG001",  # unused args
+    "S110", # try-except-pass
+    "PLR2004", # magic numbers
+    "T201", # print is ok
+]

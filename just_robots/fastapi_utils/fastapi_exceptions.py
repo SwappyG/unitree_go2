@@ -3,7 +3,6 @@ from pprint import pformat
 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from httpx import Response as HttpxResponse
 from requests import JSONDecodeError, Response
 
 
@@ -106,11 +105,10 @@ def make_json_response(status_code: int, exception: Exception) -> JSONResponse:
     )
 
 
-def raise_if_error(resp: Response | HttpxResponse) -> None:
+def raise_if_error(resp: Response) -> None:
     """checks the response object for an error. If there is one, converts it to a
     proper python exception and raises it"""
-
-    if resp.status_code < 400:  # noqa: PLR2004
+    if resp.ok:
         return None
 
     exception_type = ExceptionTypes.UNKNOWN_ERROR

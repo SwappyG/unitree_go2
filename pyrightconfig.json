@@ -1,8 +1,15 @@
 {
   "exclude": [
-    "**/build",
+    "**/venv",
     "**/__pycache__",
-   ],
+  ],
+
+  "ignore": [
+    "go2_ros2_sdk/**",
+    "just_robots/arcana_go2/**",
+  ],
+  "typeCheckingMode": "strict",
+  "useLibraryCodeForTypes": true,
 
   "reportMissingImports": true,
   "reportMissingTypeStubs": false,
@@ -12,8 +19,5 @@
   "reportUnknownVariableType": false,
   "reportUnknownLambdaType": false,
   "reportUnknownMemberType": false,
-  "reportUnusedImport": false,
-
-  "typeCheckingMode": "strict",
-  "useLibraryCodeForTypes": true
+  "reportUnusedImport": false, // duplicated by Ruff
 }
