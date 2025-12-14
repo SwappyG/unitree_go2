@@ -2,10 +2,6 @@
 	path = go2_ros2_sdk
 	url = git@github.com:SwappyG/go2_ros2_sdk.git
 	branch = remove-webrtc-relay
-[submodule "firebase_client"]
-	path = firebase_client
-	url = git@github.com:just-robots/firebase_client.git
-	branch = main
 [submodule "firebase_admin_client"]
 	path = firebase_admin_client
 	url = git@github.com:just-robots/firebase_admin_client.git
