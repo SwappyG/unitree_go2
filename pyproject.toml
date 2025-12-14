@@ -10,8 +10,8 @@ dynamic = ["dependencies"]
 
 [tool.poetry.dependencies]
 go2-robot-sdk = { path = "go2_ros2_sdk/go2_robot_sdk", develop = true }
-just-robots-firebase-admin-client = { path = "firebase_admin_client", develop = true }
-just-robots-firebase-client = { path = "firebase_admin_client/firebase_client", develop = true }
+just-robots-firebase-admin-client = { path = "./firebase_admin_client", develop = true }
+just-robots-firebase-client = { path = "./firebase_admin_client/firebase_client", develop = true }
 pydantic = ">=2.12,<3"
 PyYAML = ">=6.0,<7"
 pycryptodome = ">=3.23,<4"
