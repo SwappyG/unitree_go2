@@ -1,8 +1,4 @@
 {
-    "apiKey": "AIzaSyAmxQqmh2bx8OjJ-mmoP_-XNa2NaF7uTlI",
-    "authDomain": ???,
-    "projectId": ???,
-    "storageBucket": ???,
-    "messagingSenderId": ???,
-    "appId": ???
+  "apiKey": "AIzaSyAmxQqmh2bx8OjJ-mmoP_-XNa2NaF7uTlI",
+  "projectId": "go2telepresence"
 }
