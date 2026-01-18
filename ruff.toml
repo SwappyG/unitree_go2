@@ -1,7 +1,7 @@
 # --- Core settings ---------------------------------------------------------
 
 # Optional, but usually nice to set explicitly
-line-length = 100
+line-length = 88
 target-version = "py310"
 
 # --- Lint rule selection ---------------------------------------------------
@@ -9,11 +9,14 @@ target-version = "py310"
 include = [
     "pyproject.toml",
     "just_robots/webrtc_relay/**",
+    "go2_ros2_sdk/go2_robot_sdk/go2_robot_sdk/infrastructure/webrtc/go2_connection.py",
 ]
 
 exclude = [
-    "go2_ros2_sdk/**",
+    # "go2_ros2_sdk/**",
     "just_robots/arcana_go2/**",
+    "just_robots/app/**",
+    "just_robots/scripts/**",
 ]
 
 [lint]
@@ -61,6 +64,10 @@ ignore = [
     "PT003", # warning that specifying scope=function is redunant. Sometimes its nice to be explicit
 
     "TC001", "TC002", "TC003",
+
+    "ERA001", # in early development, sometimes we'll have commented code
+    "PLR2004", # magic numbers
+
 
     # Things to enable when we reach some level of sophistication
     # "TC001", "TC002", "TC003", # improves import hygiene

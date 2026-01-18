@@ -1,177 +1,190 @@
 import asyncio
+import dataclasses
 import logging
-import os
-import typing as t
-from contextlib import asynccontextmanager
+import time
+from types import TracebackType
+from typing import Any, TypeAlias
 
-from fastapi import Depends, FastAPI, Request
-from fastapi.responses import JSONResponse
+from aiortc import MediaStreamTrack, RTCSessionDescription
+from aiortc.contrib.media import MediaRelay
+from go2_robot_sdk.domain.entities.robot_data import RobotData
+from just_robots_firebase_client.firebase_client import FirebaseClient
 
-from just_robots.firebase.firebase_server import initialize_firebase_auth
-from just_robots.utils.settings import get_just_robots_settings
-from just_robots.webrtc_relay.webrtc_relay_app_state import (
-    WebRTCRelayAppState,
-    get_app_state,
-)
-from just_robots.webrtc_relay.webrtc_relay_endpoint_go2 import router as go2_router
-from just_robots.webrtc_relay.webrtc_relay_endpoint_webrtc import (
-    router as webrtc_router,
-)
-from just_robots.webrtc_relay.webrtc_relay_exceptions import StateException
+from just_robots.utils.settings import JustRobotsSettings, get_just_robots_settings
+from just_robots.webrtc_relay.webrtc_relay_go2 import WebRTCRelayGo2
+from just_robots.webrtc_relay.webrtc_relay_peer import WebRTCRelayPeer
+from just_robots.webrtc_relay.webrtc_relay_peers_manager import WebRTCRelayPeersManager
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
-@asynccontextmanager
-async def lifespan(fastapi_app: FastAPI):
-    just_robots_settings = get_just_robots_settings()
-    logger.info("starting fastapi")
+FirebaseUID: TypeAlias = str
 
-    # Initialize Firebase authentication
-    firebase_config_path = os.getenv("FIREBASE_CONFIG_PATH")
-    authorized_users_env = os.getenv("FIREBASE_AUTHORIZED_USERS")
-    authorized_users = None
-    if authorized_users_env:
-        authorized_users = [uid.strip() for uid in authorized_users_env.split(",")]
 
-    logger.info(f"Firebase config path: {firebase_config_path}")
-    logger.info(f"Authorized users: {authorized_users}")
+class WebRTCRelay:
+    def __init__(
+        self,
+        firebase_client: FirebaseClient,
+        settings: JustRobotsSettings | None = None,
+    ):
+        if settings is None:
+            self._settings = get_just_robots_settings()
+        else:
+            self._settings = settings
 
-    firebase_auth_config = None
-    if just_robots_settings.FIREBASE_AUTH_ENABLED:
-        firebase_auth_config = initialize_firebase_auth(
-            firebase_config_path=just_robots_settings.FIREBASE_CONFIG_PATH,
-            authorized_users=just_robots_settings.FIREBASE_AUTHORIZED_USERS,
+        self._firebase_client = firebase_client
+        self._media_relay: MediaRelay = dataclasses.field(default_factory=MediaRelay)
+        self._go2: WebRTCRelayGo2 | None = None
+        self._go2_video_track: MediaStreamTrack | None = None
+        self._peers = WebRTCRelayPeersManager(
+            settings=self._settings,
+            media_relay=self._media_relay,
+            on_datachannel_message=self._on_datachannel_message,
         )
 
-        if firebase_auth_config:
-            logger.info(
-                f"Firebase authentication enabled. Authorized users: "
-                f"{len(firebase_auth_config.authorized_users)}"
+        self._no_peers_monitor_task = asyncio.create_task(self._no_peers_monitor())
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ):
+        await self.shutdown()
+
+    async def shutdown(self):
+        self._no_peers_monitor_task.cancel()
+        try:
+            await self._no_peers_monitor_task
+        except asyncio.CancelledError:
+            pass
+
+        await self._peers.shutdown()
+        if self._go2 is not None:
+            await self._go2.shutdown()
+
+    @property
+    def firebase_client(self) -> FirebaseClient:
+        return self._firebase_client
+
+    async def connect_to_go2(
+        self,
+        robot_ip: str,
+        robot_num: int,
+        token: str,
+        reconnect: bool = False,
+    ):
+        if self._go2 is not None:
+            if self._go2.robot_ip != robot_ip or reconnect:
+                logger.info(f"removing existing GO2 connection to {self._go2.robot_ip}")
+                await self._go2.shutdown()
+            else:
+                logger.info("GO2 connection already exists")
+                return
+
+        self._go2 = await WebRTCRelayGo2.create(
+            settings=self._settings,
+            robot_ip=robot_ip,
+            robot_num=robot_num,
+            token=token,
+            on_message=self._on_go2_message,
+            on_video_frame=self._on_go2_video_track,
+        )
+
+    async def disconnect_from_go2(self):
+        if self._go2 is not None:
+            await self._go2.shutdown()
+        self._go2 = None
+
+    async def process_peer_offer(
+        self,
+        offer_sdp: str,
+        offer_type: str,
+        user_firebase_uid: FirebaseUID,
+        user_firebase_email: str,
+    ) -> RTCSessionDescription:
+        return await self._peers.add_peer(
+            offer_sdp=offer_sdp,
+            offer_type=offer_type,
+            user_firebase_uid=user_firebase_uid,
+            user_firebase_email=user_firebase_email,
+            video_track=self._go2.video_track if self._go2 is not None else None,
+        )
+
+    async def remove_peer(self, peer: FirebaseUID | WebRTCRelayPeer):
+        await self._peers.remove_peer(peer)
+
+    async def remove_all_peers(self):
+        await self._peers.remove_all_peers()
+
+    async def get_subs_for_peer(self, user_firebase_uid: FirebaseUID) -> set[str]:
+        return await self._peers.get_peer_subs(user_firebase_uid)
+
+    async def add_sub_for_peer(self, user_firebase_uid: FirebaseUID, topic: str):
+        if self._go2 is None:
+            logger.warning("GO2 connection not established")
+            return
+        await self._peers.add_sub_to_peer(user_firebase_uid, topic)
+        await self._go2.send_subscribe_message(topic)
+
+    async def remove_sub_from_peer(self, user_firebase_uid: FirebaseUID, topic: str):
+        if self._go2 is None:
+            logger.warning("GO2 connection not established")
+            return
+        await self._peers.remove_sub_from_peer(user_firebase_uid, topic)
+        await self._go2.send_unsubscribe_message(topic)
+
+    async def _on_go2_message(self, robot_data: RobotData):
+        if isinstance(robot_data.raw_message, (bytes, str)):
+            await self._peers.broadcast_to_all_peers(robot_data.raw_message)
+        else:
+            logger.warning(f"unknown raw type {type(robot_data.raw_message)}")
+
+    async def _on_go2_video_track(self, track: MediaStreamTrack, _robot_num: str | int):
+        """
+        Store the GO2 video track. We'll attach it to a PC RTCPeerConnection
+        when the PC calls /offer. We'll relay via MediaRelay for multi-subscriber safety.
+        """
+        logger.info(f"received go2 video track, {track=}")
+        if self._go2_video_track is not None:
+            # TODO (swapnil): determine if the proxy tracks need to be manually stopped
+            self._go2_video_track.stop()
+            self._media_relay = MediaRelay()
+
+        self._go2_video_track = track
+        await self._peers.update_video_track(self._media_relay, track)
+
+    async def _on_datachannel_message(self, message: Any):
+        """handler for messages inbound from relay'ed webrtc connection"""
+        if self._go2 is None:
+            logger.debug(f"go2 has no data_channel connected to send message to")
+            return
+
+        if not isinstance(message, str):
+            logger.warning(
+                f"Got unexpected data type in datachannel: {type(message)!s}, {message=}"
             )
-    else:
-        logger.warning("Firebase authentication is disabled. All requests will be allowed.")
+            return
 
-    fastapi_app.state.state = WebRTCRelayAppState(
-        firebase_auth=firebase_auth_config,
-    )
+        # Assume this is a json string and forward it
+        await self._go2.publish_json_str(message)
 
-    # clean shutdown
-    try:
-        logger.info("yielding fastapi app")
-        yield
-    finally:
-        logger.info("cleaning up fastapi")
-
-        if fastapi_app.state.state.go2:
-            await fastapi_app.state.state.go2.disconnect()
-
-        # Close PC connection if present
-        if fastapi_app.state.state.relay_rtc_peer_connection:
-            await fastapi_app.state.state.relay_rtc_peer_connection.close()
-            fastapi_app.state.state.relay_rtc_peer_connection = None
-            fastapi_app.state.state.relay_rtc_data_channel = None
-        # Close Go2 connection if present
-        if fastapi_app.state.state.go2:
-            await fastapi_app.state.state.go2.disconnect()
-            fastapi_app.state.state.go2 = None
-            fastapi_app.state.state.go2_video_track = None
-
-
-app = FastAPI(lifespan=lifespan)
-app.include_router(go2_router, prefix="/go2")
-app.include_router(webrtc_router, prefix="/webrtc")
-
-
-@app.get("/stats/webrtc")
-async def get_webrtc_stats(
-    state: t.Annotated[WebRTCRelayAppState, Depends(get_app_state)],
-):
-    """Get current WebRTC statistics for all connections"""
-    stats = {}
-
-    if state.relay_stats_monitor:
-        stats["relay_to_client"] = await state.relay_stats_monitor.get_current_stats()
-
-    if state.client_to_relay_stats_monitor:
-        stats["client_to_relay"] = await state.client_to_relay_stats_monitor.get_current_stats()
-
-    if state.go2_stats_monitor:
-        stats["go2_to_relay"] = await state.go2_stats_monitor.get_current_stats()
-
-    return stats
-
-
-@app.exception_handler(StateException)
-def _app_state_exception_handler(_request: Request, exc: StateException):  # pyright: ignore[reportUnusedFunction]
-    return JSONResponse(
-        status_code=409,
-        content={"detail": str(exc), "exception_type": "state_exception"},
-    )
-
-
-@app.exception_handler(ValueError)
-def _app_value_error_handler(_request: Request, exc: ValueError):  # pyright: ignore[reportUnusedFunction]
-    return JSONResponse(
-        status_code=422, content={"detail": str(exc), "exception_type": "value_error"}
-    )
-
-
-@app.exception_handler(KeyError)
-def _app_key_error_handler(_request: Request, exc: KeyError):  # pyright: ignore[reportUnusedFunction]
-    return JSONResponse(
-        status_code=422, content={"detail": str(exc), "exception_type": "key_error"}
-    )
-
-
-@app.exception_handler(IndexError)
-def _app_index_error_handler(_request: Request, exc: IndexError):  # pyright: ignore[reportUnusedFunction]
-    return JSONResponse(
-        status_code=422, content={"detail": str(exc), "exception_type": "index_error"}
-    )
-
-
-@app.exception_handler(RuntimeError)
-def _app_runtime_error_handler(_request: Request, exc: RuntimeError):  # pyright: ignore[reportUnusedFunction]
-    return JSONResponse(
-        status_code=500, content={"detail": str(exc), "exception_type": "runtime_error"}
-    )
-
-
-@app.exception_handler(TimeoutError)
-def _app_timeout_error_handler(_request: Request, exc: TimeoutError):  # pyright: ignore[reportUnusedFunction]
-    return JSONResponse(
-        status_code=504, content={"detail": str(exc), "exception_type": "timeout_error"}
-    )
-
-
-@app.exception_handler(asyncio.TimeoutError)
-def _app_asyncio_timeout_error_handler(_request: Request, exc: asyncio.TimeoutError):  # pyright: ignore[reportUnusedFunction]
-    return JSONResponse(
-        status_code=504,
-        content={"detail": str(exc), "exception_type": "asyncio_timeout_error"},
-    )
-
-
-@app.exception_handler(Exception)
-def _app_unhandled_error_handler(_request: Request, exc: Exception):  # pyright: ignore[reportUnusedFunction]
-    return JSONResponse(
-        status_code=500,
-        content={"detail": str(exc), "exception_type": type(exc).__name__},
-    )
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(
-        "go2_robot_sdk.webrtc_relay.webrtc_relay:app",
-        host="localhost",
-        port=8000,
-        reload=True,
-        log_level="info",
-    )
+    async def _no_peers_monitor(self):
+        time_since_no_peers = time.time()
+        while True:
+            current_time = time.time()
+            if self._peers.num_peers() == 0:
+                if (
+                    current_time - time_since_no_peers
+                    > self._settings.RELAY_NO_PEERS_TIMEOUT_SECONDS
+                ):
+                    if self._go2 is not None:
+                        logger.info("no peers for too long, shutting down GO2")
+                        await self._go2.shutdown()
+                        self._go2 = None
+            else:
+                time_since_no_peers = current_time
+            await asyncio.sleep(10.0)

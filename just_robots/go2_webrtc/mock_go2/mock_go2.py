@@ -12,20 +12,20 @@ from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
 from go2_robot_sdk.infrastructure.webrtc.crypto.encryption import CryptoUtils
 
+from just_robots.fastapi_utils.fastapi_exceptions import (
+    NotFoundException,
+    StateException,
+)
 from just_robots.go2_webrtc.go2_connection_messages import (
     ConNotifyReply,
     WebRtcAnswer,
 )
-from just_robots.go2_webrtc.go2_lidar_dump_streamer import (
+from just_robots.go2_webrtc.mock_go2.mock_go2_lidar_dump_streamer import (
     MockGo2LidarDumpStreamer,
 )
 from just_robots.go2_webrtc.mock_go2.mock_go2_video_track import MockGo2VideoTrack
 from just_robots.go2_webrtc.mock_go2.mock_go2_webrtc_peer_connection import (
     MockGo2WebRTCPeerConnection,
-)
-from just_robots.webrtc_relay.webrtc_relay_exceptions import (
-    NotFoundException,
-    StateException,
 )
 
 logger = logging.getLogger(__name__)
@@ -148,14 +148,20 @@ class MockGo2:
 
         # 3) Create PC and finish SDP
         pc = RTCPeerConnection()
-        pc.addTrack(self._video_track)
+        # video_transceiver = pc.addTransceiver("video", direction="sendonly")
 
         # Finish SDP
         await pc.setRemoteDescription(
             RTCSessionDescription(sdp=remote_sdp, type=remote_type)
         )
+
+        for transceiver in pc.getTransceivers():
+            if transceiver.kind == "video":
+                transceiver.sender.replaceTrack(self._video_track)
+                break
+
         answer = await pc.createAnswer()
-        if answer is None:
+        if not answer:
             raise StateException(f"unable to generate answer from peer connection")
 
         await pc.setLocalDescription(answer)

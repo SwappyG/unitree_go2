@@ -8,13 +8,13 @@ from aiortc.contrib.media import MediaBlackhole
 from go2_robot_sdk.infrastructure.webrtc.crypto.encryption import ValidationCrypto
 
 import just_robots.go2_webrtc.go2_message as go2m
+from just_robots.fastapi_utils.fastapi_exceptions import StateException
 from just_robots.go2_webrtc.go2_connection_messages import (
     GenericMessage,
     MessageMessage,
     ValidationMessage,
 )
 from just_robots.go2_webrtc.mock_go2.mock_go2_video_track import MockGo2VideoTrack
-from just_robots.webrtc_relay.webrtc_relay_exceptions import StateException
 
 logger = logging.getLogger(__name__)
 

@@ -4,20 +4,19 @@
         "editor.formatOnSave": true,
         "editor.codeActionsOnSave": {
             "source.organizeImports.ruff": "explicit"
-        }   
+        },
+        "editor.inlayHints.enabled": "offUnlessPressed",
     },
 
+    "ruff.lineLength": 100,
     "ruff.enable": true,
     "ruff.lint.enable": true,
-    "pylint.enabled": false,
+    "ruff.configurationPreference": "filesystemFirst",
 
-
-    "editor.defaultFormatter": "ms-python.black-formatter",
-    "black-formatter.args": [
-        "--line-length",
-        "100"
-    ],
     "editor.rulers": [
         80, 100
-    ]
+    ],
+    "[markdown]": {
+        "editor.defaultFormatter": "esbenp.prettier-vscode"
+    }
 }

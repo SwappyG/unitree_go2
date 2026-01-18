@@ -1,11 +1,12 @@
 import enum
 from http import HTTPStatus
+from json.decoder import JSONDecodeError
 from pprint import pformat
 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from httpx import Response as HttpxResponse
-from requests import JSONDecodeError, Response
+from requests import Response
 
 
 class NotFoundException(Exception):

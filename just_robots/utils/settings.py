@@ -13,13 +13,16 @@ def _env_filepath():
 
 
 class JustRobotsSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=_env_filepath(), env_prefix="JUST_ROBOTS_")
+    model_config = SettingsConfigDict(
+        env_file=_env_filepath(), env_prefix="JUST_ROBOTS_"
+    )
 
-    FIREBASE_CONFIG_PATH: Path | None = None
-    FIREBASE_AUTH_ENABLED: bool
-    FIREBASE_API_KEY: str
+    FIREBASE_CONFIG_PATH: Path
     RELAY_SERVER_URL: str
-    FIREBASE_AUTHORIZED_USERS: list[str] | None = None
+    # WEBRTC_STUN_SERVERS: str
+    # WEBRTC_TURN_SERVERS: str
+    RELAY_IDLE_TIMEOUT_SECONDS: float = 300.0
+    RELAY_NO_PEERS_TIMEOUT_SECONDS: float = 120.0
 
 
 def get_just_robots_settings():
