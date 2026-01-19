@@ -22,7 +22,7 @@ class WebRtcAnswer(BaseModel):
 
 
 class ValidationMessage(BaseModel):
-    type: str = "validation"
+    type: t.Literal["validation"] = "validation"
     topic: str = ""
     data: str
 
@@ -31,10 +31,20 @@ class ValidationMessage(BaseModel):
         return ValidationMessage(data="Validation Ok.")
 
 
+class SubscribeMessage(BaseModel):
+    type: t.Literal["subscribe"] = "subscribe"
+    topic: str
+
+
+class UnsubscribeMessage(BaseModel):
+    type: t.Literal["unsubscribe"] = "unsubscribe"
+    topic: str
+
+
 class VideoMessage(BaseModel):
-    type: str = "vid"
-    topic: str = ""
-    data: str
+    type: t.Literal["vid"] = "vid"
+    topic: t.Literal[""] = ""
+    data: t.Literal["on", "off"]
 
     @staticmethod
     def video_on() -> VideoMessage:
@@ -45,13 +55,13 @@ class VideoMessage(BaseModel):
         return VideoMessage(data="off")
 
 
+class MessageMessage(BaseModel):
+    type: t.Literal["msg"] = "msg"
+    topic: str
+    data: str | dict[str, t.Any]
+
+
 class GenericMessage(BaseModel):
     type: str
     topic: str = ""
-    data: str | dict[str, t.Any]
-
-
-class MessageMessage(BaseModel):
-    type: str = ""
-    topic: str
-    data: str | dict[str, t.Any]
+    data: str | dict[str, t.Any] | None = None
