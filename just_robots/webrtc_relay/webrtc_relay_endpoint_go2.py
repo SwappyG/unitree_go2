@@ -5,8 +5,8 @@ from uuid import UUID
 import just_robots_firebase_client.firebase_types as fbt
 from fastapi import APIRouter, Depends, Query
 
-from just_robots.webrtc_relay.webrtc_dependencies import get_app_state, get_user
 from just_robots.webrtc_relay.webrtc_relay import WebRTCRelay
+from just_robots.webrtc_relay.webrtc_relay_dependencies import get_app_state, get_user
 from just_robots.webrtc_relay.webrtc_relay_types import (
     AddSubscriptionArgs,
     AddSubscriptionReply,

@@ -28,6 +28,7 @@ class WebRTCRelayPeer:
         peer_connection: RTCPeerConnection,
         data_channel: RTCDataChannel,
         video_transceiver: RTCRtpTransceiver,
+        video_track: MediaStreamTrack | None = None,
     ):
         self.connection_id = connection_id
         self.user_firebase_uid = user_firebase_uid
@@ -35,6 +36,7 @@ class WebRTCRelayPeer:
         self.peer_connection = peer_connection
         self.data_channel = data_channel
         self.video_transceiver = video_transceiver
+        self.video_track = video_track
         self.subscribed_topics = set[str]()
         self.last_activity_time = time.time()
         self._connection_dead = False
@@ -63,7 +65,15 @@ class WebRTCRelayPeer:
         if not self.video_transceiver.stopped:
             await self.video_transceiver.stop()
 
+        # Stop the relay track to prevent frame accumulation
+        if self.video_track is not None:
+            self.video_track.stop()
+
     def update_video_track(self, video_track: MediaStreamTrack):
+        # Stop old relay track to prevent frame accumulation
+        if self.video_track is not None:
+            self.video_track.stop()
+        self.video_track = video_track
         self.video_transceiver.sender.replaceTrack(video_track)
 
     @staticmethod
@@ -98,6 +108,7 @@ class WebRTCRelayPeer:
             video_transceiver=video_transceiver,
             user_firebase_uid=user_firebase_uid,
             user_firebase_email=user_firebase_email,
+            video_track=video_track,
         )
 
         async def on_datachannel_message_wrapper(message: Any):

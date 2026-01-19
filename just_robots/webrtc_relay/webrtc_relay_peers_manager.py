@@ -28,12 +28,10 @@ class WebRTCRelayPeersManager:
         settings: JustRobotsSettings,
         media_relay: MediaRelay,
         on_datachannel_message: Callable[[Any], Coroutine[Any, None, None]],
-        on_peer_removed: Callable[[], Coroutine[Any, None, None]] | None = None,
     ):
         self._settings = settings
         self._media_relay = media_relay
         self._on_datachannel_message = on_datachannel_message
-        self._on_peer_removed = on_peer_removed
 
         # Single index by connection_id
         self._peers: dict[ConnectionUUID, WebRTCRelayPeer] = {}
@@ -136,19 +134,11 @@ class WebRTCRelayPeersManager:
         logger.info(f"unsubscribing from topic {topic}")
 
     async def broadcast_to_all_peers(self, raw_message: bytes | str):
-        logger.info(f"Broadcasting to {self.num_peers} peers")
-
         if self.num_peers == 0:
-            logger.warning("No peers to broadcast to!")
             return
 
         for peer in list(self._peers.values()):
             dc_state = peer.data_channel.readyState
-            logger.info(
-                f"Peer {peer.connection_id} ({peer.user_firebase_email}): "
-                f"datachannel state = {dc_state}"
-            )
-
             if dc_state != "open":
                 logger.warning(
                     f"Peer {peer.connection_id} has datachannel not open (state={dc_state})"
@@ -158,7 +148,6 @@ class WebRTCRelayPeersManager:
             peer.last_activity_time = time.time()
             try:
                 peer.data_channel.send(raw_message)
-                logger.info(f"Sent message to peer {peer.connection_id}")
             except Exception:
                 logger.exception(f"Failed to send to peer {peer.connection_id}")
 
@@ -220,7 +209,3 @@ class WebRTCRelayPeersManager:
                         await peer.shutdown()
 
                 self._reset_subscribed_topics()
-
-                # Notify parent that peers were removed (e.g., to restart video blackhole)
-                if self._on_peer_removed is not None:
-                    await self._on_peer_removed()

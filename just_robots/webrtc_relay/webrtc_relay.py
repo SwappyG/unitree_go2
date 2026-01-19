@@ -45,12 +45,11 @@ class WebRTCRelay:
         self._media_relay: MediaRelay = MediaRelay()
         self._go2: WebRTCRelayGo2 | None = None
         self._go2_video_track: MediaStreamTrack | None = None
-        self._video_blackhole: MediaBlackhole | None = None
+        self._video_blackhole = MediaBlackhole()
         self._peers = WebRTCRelayPeersManager(
             settings=self._settings,
             media_relay=self._media_relay,
             on_datachannel_message=self._on_datachannel_message,
-            on_peer_removed=self._on_peer_removed,
         )
 
         self._no_peers_monitor_task = asyncio.create_task(self._no_peers_monitor())
@@ -73,8 +72,9 @@ class WebRTCRelay:
         except asyncio.CancelledError:
             pass
 
-        if self._video_blackhole is not None:
-            await self._video_blackhole.stop()
+        await self._video_blackhole.stop()
+        if self._go2_video_track is not None:
+            self._go2_video_track.stop()
 
         await self._peers.shutdown()
         if self._go2 is not None:
@@ -120,6 +120,17 @@ class WebRTCRelay:
         user_firebase_uid: FirebaseUID,
         user_firebase_email: str,
     ) -> PeerOfferResult:
+        # TODO (swapnil): right now, we always dump the original video track to the blackhole. This
+        # means that no matter what, we're duplicating the video track at least once, wasting CPU.
+        # Ideally:
+        # - 0 peers -> dump to blackhole
+        # - 1 peer -> set the original track to the peer
+        #       - stop the blackhole
+        #       - if peer dies, don't close the original track. restart blackhole with original
+        # - 2+ peers -> use the media relay to copy the original
+        #    - if the peer with the original dies, move the original to one of the other peers
+        # This probably requires track management in this class, and having the peers only get
+        # references to tracks.
         video_track = self._go2_video_track
         if video_track is not None:
             video_track = self._media_relay.subscribe(video_track)
@@ -131,9 +142,6 @@ class WebRTCRelay:
             user_firebase_email=user_firebase_email,
             video_track=video_track,
         )
-
-        # This will stop the video black hole, since we have a peer consuming the video
-        await self._update_video_blackhole()
 
         return PeerOfferResult(
             sdp=peer.peer_connection.localDescription,
@@ -159,19 +167,7 @@ class WebRTCRelay:
         await self._peers.remove_sub_from_connection(connection_id, topic)
         await self._go2.send_unsubscribe_message(topic)
 
-    async def _on_peer_removed(self) -> None:
-        """Called by peers manager when peers are removed (e.g., due to idle timeout)."""
-        await self._update_video_blackhole()
-
     async def _on_go2_message(self, robot_data: RobotData):
-        msg_type = type(robot_data.raw_message).__name__
-        msg_preview = (
-            str(robot_data.raw_message)[:100] if robot_data.raw_message else "None"
-        )
-        logger.info(
-            f"Received message from GO2: type={msg_type}, preview={msg_preview}"
-        )
-
         if isinstance(robot_data.raw_message, (bytes, str)):
             await self._peers.broadcast_to_all_peers(robot_data.raw_message)
         else:
@@ -185,7 +181,7 @@ class WebRTCRelay:
         logger.info(f"received go2 video track, {track=}")
 
         # Stop existing blackhole if any
-        await self._stop_video_blackhole()
+        # await self._stop_video_blackhole()
 
         if self._go2_video_track is not None:
             # TODO (swapnil): determine if the proxy tracks need to be manually stopped
@@ -195,35 +191,8 @@ class WebRTCRelay:
         self._go2_video_track = track
 
         # Start blackhole if no peers are connected
-        await self._update_video_blackhole()
+        self._video_blackhole.addTrack(track)
         await self._peers.update_video_track(self._media_relay, track)
-
-    async def _start_video_blackhole(self) -> None:
-        """Start the blackhole to consume video frames and prevent buffering."""
-        if self._video_blackhole is not None or self._go2_video_track is None:
-            return
-
-        logger.debug("Starting video blackhole (no peers connected)")
-        drain_track = self._media_relay.subscribe(self._go2_video_track)
-        self._video_blackhole = MediaBlackhole()
-        self._video_blackhole.addTrack(drain_track)
-        await self._video_blackhole.start()
-
-    async def _stop_video_blackhole(self) -> None:
-        """Stop the blackhole."""
-        if self._video_blackhole is None:
-            return
-
-        logger.debug("Stopping video blackhole")
-        await self._video_blackhole.stop()
-        self._video_blackhole = None
-
-    async def _update_video_blackhole(self) -> None:
-        """Start or stop the blackhole based on whether peers are connected."""
-        if self._peers.num_peers == 0:
-            await self._start_video_blackhole()
-        else:
-            await self._stop_video_blackhole()
 
     async def _on_datachannel_message(self, message: Any):
         """handler for messages inbound from relay'ed webrtc connection"""
