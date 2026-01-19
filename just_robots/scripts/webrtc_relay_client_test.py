@@ -8,7 +8,6 @@ from uuid import uuid4
 import cv2
 from aiortc import MediaStreamTrack
 from go2_robot_sdk.domain.constants.webrtc_topics import RTC_TOPIC
-from go2_robot_sdk.domain.entities.robot_config import RobotConfig
 from go2_robot_sdk.domain.entities.robot_data import RobotData
 from just_robots_firebase_client.firebase_client_authenticated import (
     FirebaseClientAuthenticated,
@@ -20,7 +19,7 @@ from just_robots.scripts.helpers.simple_media_stream_display import (
 from just_robots.utils.logging import logging
 from just_robots.utils.package_paths import get_package_root
 from just_robots.utils.settings import get_just_robots_settings
-from just_robots.webrtc_relay.webrtc_relay_client import WebRTCRelayClient
+from just_robots.webrtc_relay_client.webrtc_relay_client import WebRTCRelayClient
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -32,7 +31,13 @@ video_display_task: asyncio.Task[None] | None = None
 
 
 async def on_robot_data(robot_data: RobotData):
-    logger.info(f"Robot data: {robot_data}")
+    if robot_data.lidar_data is not None:
+        if robot_data.lidar_data.compressed_data is not None:
+            logger.info(f"Lidar data: {robot_data.lidar_data.compressed_data[:20]}")
+        else:
+            logger.info(f"Lidar data: {robot_data.lidar_data.positions[:20]}")
+    else:
+        logger.info(f"Robot data: {robot_data}")
 
 
 async def on_video_track(video_track: MediaStreamTrack):
@@ -66,19 +71,11 @@ async def main():
     try:
         async with WebRTCRelayClient(
             relay_url="http://localhost:8000",
-            robot_config=RobotConfig.from_params(
-                robot_ip="localhost",
-                token="",
-                conn_type="webrtc",
-                enable_video=True,  # Enable video
-                decode_lidar=False,
-                publish_raw_voxel=False,
-                obstacle_avoidance=False,
-            ),
+            go2_ip_address="localhost",
             on_robot_data=on_robot_data,
             on_video_track=on_video_track,
             on_lidar_frame=on_lidar_frame,
-            firebase_client=auth_cli,
+            auth_provider=auth_cli,
         ) as client:
             await client.connect_to_go2()
             await client.start_relay()
