@@ -92,13 +92,40 @@ class MockGo2:
         self._video_track = MockGo2VideoTrack()
 
         self._lidar_task = asyncio.create_task(self._lidar_pub_task())
+        self._cleanup_task = asyncio.create_task(self._cleanup_dead_connections_task())
+
+    def _remove_dead_connections(self):
+        """Remove dead connections from _pcs. Returns count of removed connections."""
+        dead_pcs = {pc for pc in self._pcs if pc.is_dead}
+        if dead_pcs:
+            logger.info(f"Removing {len(dead_pcs)} dead connection(s)")
+            self._pcs -= dead_pcs
+            logger.info(f"Active connections: {len(self._pcs)}")
+
+    async def _cleanup_dead_connections_task(self) -> None:
+        """Periodically clean up dead connections."""
+        try:
+            while True:
+                await asyncio.sleep(5.0)  # Check every 5 seconds
+                self._remove_dead_connections()
+        except asyncio.CancelledError:
+            logger.info("Cleanup task cancelled")
+        except Exception as ex:
+            logger.exception("Cleanup task failed", exc_info=ex)
 
     async def stop(self) -> None:
-        for pc in list(self._pcs):
-            await pc.stop()
+        logger.info("Stopping MockGo2...")
 
+        # Cancel background tasks
+        self._cleanup_task.cancel()
         self._lidar_task.cancel()
+
+        # Stop all peer connections
+        await asyncio.gather(*[pc.stop() for pc in list(self._pcs)])
+
+        self._pcs.clear()
         self._video_track.stop()
+        logger.info("MockGo2 stopped")
 
     async def on_con_notify(self) -> str:
         """
@@ -106,6 +133,7 @@ class MockGo2:
           data1 = <10-prefix> + base64(PEM) + <10-suffix>
         """
         # NOTE: this is the inverse of what the Go2Connection.connect function does
+        logger.info(f"on_con_notify called (active connections: {len(self._pcs)})")
         data1 = f"{self._prefix10}{self._rsa_pub_pem_b64}{self._suffix10}"
         payload = ConNotifyReply(data1=data1)
         text = payload.model_dump_json(indent=0)
@@ -117,6 +145,7 @@ class MockGo2:
         """
         Decrypt, complete WebRTC, and return AES-encrypted answer as plain text.
         """
+        logger.info(f"on_con_ing called (active connections: {len(self._pcs)})")
         if path_ending != self._path_ending:
             logger.warning(
                 f"Bad path ending {path_ending}, expected {self._path_ending}"
@@ -148,17 +177,30 @@ class MockGo2:
 
         # 3) Create PC and finish SDP
         pc = RTCPeerConnection()
-        # video_transceiver = pc.addTransceiver("video", direction="sendonly")
 
-        # Finish SDP
+        # Set remote description first (processes the client's offer)
         await pc.setRemoteDescription(
             RTCSessionDescription(sdp=remote_sdp, type=remote_type)
         )
 
-        for transceiver in pc.getTransceivers():
+        # Debug: log the transceivers created from the offer
+        transceivers = pc.getTransceivers()
+        logger.info(f"Transceivers after setRemoteDescription: {len(transceivers)}")
+
+        # Find that transceiver and update it to be sendonly + replace track
+        video_transceiver_found = False
+        for transceiver in transceivers:
             if transceiver.kind == "video":
+                transceiver.direction = "sendonly"
                 transceiver.sender.replaceTrack(self._video_track)
+                logger.info(
+                    f"Added video track to transceiver (direction now: {transceiver.direction})"
+                )
+                video_transceiver_found = True
                 break
+
+        if not video_transceiver_found:
+            logger.warning("No video transceiver found - client did not request video")
 
         answer = await pc.createAnswer()
         if not answer:
@@ -182,10 +224,25 @@ class MockGo2:
         return enc_answer
 
     async def _lidar_pub_task(self) -> None:
-        if self._lidar_streamer:
+        """
+        Publishes lidar frames to all active peer connections.
+        Note: Dead connection cleanup is handled by _cleanup_dead_connections_task.
+        """
+        if not self._lidar_streamer:
+            logger.info("No lidar streamer configured, lidar pub task exiting")
+            return
+
+        try:
             while True:
                 lidar_frame = next(self._lidar_streamer)
+
+                # Send to active connections (use list() snapshot for safe iteration)
                 for pc in list(self._pcs):
-                    await pc.queue_lidar_frame(lidar_frame)
+                    if not pc.is_dead:
+                        await pc.queue_lidar_frame(lidar_frame)
 
                 await asyncio.sleep(self.publish_interval)
+        except asyncio.CancelledError:
+            logger.info("Lidar pub task cancelled")
+        except Exception as ex:
+            logger.exception("Lidar pub task failed", exc_info=ex)
