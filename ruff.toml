@@ -9,6 +9,11 @@ target-version = "py310"
 include = [
     "pyproject.toml",
     "just_robots/webrtc_relay/**",
+    "just_robots/go2_webrtc/**",
+    "just_robots/scripts/**",
+    "just_robots/fastapi_utils/**",
+    "just_robots/utils/**",
+    "just_robots/config/**",
     "go2_ros2_sdk/go2_robot_sdk/go2_robot_sdk/infrastructure/webrtc/go2_connection.py",
 ]
 
@@ -16,7 +21,7 @@ exclude = [
     # "go2_ros2_sdk/**",
     "just_robots/arcana_go2/**",
     "just_robots/app/**",
-    "just_robots/scripts/**",
+    "just_robots/scripts/main.py",
 ]
 
 [lint]

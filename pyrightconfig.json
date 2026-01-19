@@ -2,11 +2,32 @@
   "exclude": [
     "**/venv",
     "**/__pycache__",
+    "**/.github/**",
+
+    "go2_ros2_sdk/coco_detector/**",
+    "go2_ros2_sdk/docker/**",
+    "go2_ros2_sdk/go2_interfaces/**",
+    "go2_ros2_sdk/lidar_processor/**",
+    "go2_ros2_sdk/lidar_processor_cpp/**",
   ],
 
   "ignore": [
-    "go2_ros2_sdk/**",
+    "go2_ros2_sdk/go2_robot_sdk/calibration/**",
+    "go2_ros2_sdk/go2_robot_sdk/config/**",
+    "go2_ros2_sdk/go2_robot_sdk/dae/**",
+    "go2_ros2_sdk/go2_robot_sdk/external_lib/**",
+    "go2_ros2_sdk/go2_robot_sdk/launch/**",
+    "go2_ros2_sdk/go2_robot_sdk/meshes/**",
+    "go2_ros2_sdk/go2_robot_sdk/resources/**",
+    "go2_ros2_sdk/go2_robot_sdk/urdf/**",
+    "go2_ros2_sdk/go2_robot_sdk/go2_robot_sdk/application/**",
+    "go2_ros2_sdk/go2_robot_sdk/go2_robot_sdk/presentation/**",
+    "go2_ros2_sdk/go2_robot_sdk/go2_robot_sdk/infrastructure/ros2/**",
     "just_robots/arcana_go2/**",
+    "just_robots/scripts/main.py",
+  ],
+  "include": [
+    "go2_ros2_sdk/go2_robot_sdk/go2_robot_sdk/infrastructure/webrtc/go2_connection.py",
   ],
   "typeCheckingMode": "strict",
   "useLibraryCodeForTypes": true,
@@ -20,4 +41,5 @@
   "reportUnknownLambdaType": false,
   "reportUnknownMemberType": false,
   "reportUnusedImport": false, // duplicated by Ruff
+  "reportPrivateUsage": false, // duplicated by Ruff
 }
