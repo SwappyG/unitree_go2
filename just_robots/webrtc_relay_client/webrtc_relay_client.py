@@ -20,16 +20,15 @@ from fastapi import status
 from go2_robot_sdk.application.utils import command_generator
 from go2_robot_sdk.domain.constants.robot_commands import ROBOT_CMD
 from go2_robot_sdk.domain.constants.webrtc_topics import RTC_TOPIC
-from go2_robot_sdk.domain.entities.robot_config import RobotConfig
 from go2_robot_sdk.domain.entities.robot_data import RobotData
 from go2_robot_sdk.infrastructure.webrtc.data_decoder import WebRTCDataDecoder
-from just_robots_firebase_client.firebase_client_authenticated import (
-    FirebaseClientAuthenticated,
-)
 
 import just_robots.webrtc_relay.webrtc_relay_types as wrt
 from just_robots.fastapi_utils.fastapi_exceptions import StateException, raise_if_error
 from just_robots.webrtc_relay.webrtc_relay_types import GetSubscriptionsReply
+from just_robots.webrtc_relay_client.auth_token_provider import (
+    FirebaseAuthTokenProvider,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,15 +42,17 @@ class WebRTCRelayClient:
     def __init__(
         self,
         relay_url: str,
-        robot_config: RobotConfig,
+        go2_ip_address: str,
         on_robot_data: t.Callable[[RobotData], t.Coroutine[None, None, None]],
         on_video_track: t.Callable[[MediaStreamTrack], t.Coroutine[None, None, None]],
         on_lidar_frame: t.Callable[[dict[str, t.Any]], t.Coroutine[None, None, None]],
-        firebase_client: FirebaseClientAuthenticated,
+        auth_provider: FirebaseAuthTokenProvider,
+        go2_token: str = "",
     ):
         self.url = relay_url
-        self.robot_config = robot_config
-        self._firebase_client = firebase_client
+        self.go2_ip_address = go2_ip_address
+        self.go2_token = go2_token
+        self._auth_provider = auth_provider
         self._client = httpx.AsyncClient(timeout=60.0)
         self._on_robot_data = on_robot_data
         self._on_video_track = on_video_track
@@ -414,19 +415,19 @@ class WebRTCRelayClient:
         raise_if_error(r)
 
     async def _get_auth_headers(self) -> dict[str, str]:
-        """Get Authorization headers with Firebase ID token."""
-        id_token = await self._firebase_client.get_id_token()
+        """Get Authorization headers with ID token from auth provider."""
+        id_token = await self._auth_provider.get_id_token()
         return {"Authorization": f"Bearer {id_token}"}
 
     async def _connect_to_go2(self):
         logger.info(
-            f"instructing webrtc relay server to connect to the go2 at {self.robot_config=}"
+            f"instructing webrtc relay server to connect to the go2 at {self.go2_ip_address=}"
         )
 
         connect_args = wrt.ConnectArgs(
-            robot_ip=self.robot_config.robot_ip_list[0],
+            robot_ip=self.go2_ip_address,
             robot_num=1,  # TODO (swapnil) - pipe this properly
-            token=self.robot_config.token,
+            token=self.go2_token,
         )
 
         connect_reply = await self._client.post(
@@ -451,25 +452,6 @@ class WebRTCRelayClient:
             logger.info(f"[client] /disconnect: {r.json()}")
         except Exception as e:  # noqa: BLE001
             logger.info(f"[client] /disconnect failed: {e}")
-
-    # async def _update_subscriptions_go2(self, topics: set[str]):
-    #     """
-    #     Update the topics subscribed to from the GO2 robot without reconnecting.
-
-    #     Args:
-    #         topics: List of topic strings to subscribe to
-    #     """
-    #     logger.info(f"Updating subscription topics to: {topics=}")
-
-    #     r = await self._client.post(
-    #         f"{self.url}/go2/update-subscriptions",
-    #         json={"topics": list(topics)},
-    #         headers=await self._get_auth_headers(),
-    #     )
-    #     raise_if_error(r)
-
-    #     self._topics_to_subscribe_to = topics
-    #     logger.info("Successfully updated topic subscriptions")
 
     async def _on_peer_datachannel(self, data_channel: RTCDataChannel):
         logger.info(f"received datachannel from webrtc relay server. {data_channel=}")
