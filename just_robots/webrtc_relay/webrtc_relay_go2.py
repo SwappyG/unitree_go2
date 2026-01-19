@@ -51,7 +51,7 @@ class WebRTCRelayGo2:
             on_message=on_message,
             on_video_frame=on_video_frame,
             decode_message=True,
-            decode_lidar=True,
+            decode_lidar=False,
         )
         self = WebRTCRelayGo2(settings, go2)
         # this has to be after construction, because we need `self`
