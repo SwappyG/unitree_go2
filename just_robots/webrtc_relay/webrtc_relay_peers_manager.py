@@ -4,11 +4,11 @@ import time
 from collections.abc import Callable, Coroutine
 from types import TracebackType
 from typing import Any, TypeAlias
+from uuid import UUID
 
-from aiortc import MediaStreamTrack, RTCSessionDescription
+from aiortc import MediaStreamTrack
 from aiortc.contrib.media import MediaRelay
 from fastapi.security import HTTPBearer
-from just_robots_firebase_client.firebase_client import FirebaseClient
 
 from just_robots.fastapi_utils.fastapi_exceptions import StateException
 from just_robots.utils.settings import JustRobotsSettings
@@ -17,26 +17,30 @@ from just_robots.webrtc_relay.webrtc_relay_peer import WebRTCRelayPeer
 logger = logging.getLogger(__name__)
 bearer_auth = HTTPBearer()
 
-FirebaseUID: TypeAlias = str
+ConnectionUUID: TypeAlias = UUID
 
 
 class WebRTCRelayPeersManager:
+    """Manages multiple WebRTC peer connections, allowing multiple connections per user."""
+
     def __init__(
         self,
         settings: JustRobotsSettings,
         media_relay: MediaRelay,
         on_datachannel_message: Callable[[Any], Coroutine[Any, None, None]],
+        on_peer_removed: Callable[[], Coroutine[Any, None, None]] | None = None,
     ):
         self._settings = settings
-        self._firebase_client: FirebaseClient | None = None
         self._media_relay = media_relay
         self._on_datachannel_message = on_datachannel_message
-        self._peers: dict[FirebaseUID, WebRTCRelayPeer] = {}
+        self._on_peer_removed = on_peer_removed
+
+        # Single index by connection_id
+        self._peers: dict[ConnectionUUID, WebRTCRelayPeer] = {}
+
         self._subscribed_topics_superset: set[str] = set()
 
-        self._idle_peers_monitor_task = asyncio.create_task(
-            self._monitor_for_idle_peers()
-        )
+        self._idle_peers_monitor_task = asyncio.create_task(self._monitor_peers())
 
     async def __aenter__(self):
         return self
@@ -59,39 +63,26 @@ class WebRTCRelayPeersManager:
         await self._for_each_peer(lambda peer: peer.shutdown())
 
     @property
-    def firebase_client(self) -> FirebaseClient:
-        if self._firebase_client is None:
-            raise RuntimeError("Firebase client not configured")
-        return self._firebase_client
-
     def num_peers(self) -> int:
         return len(self._peers)
 
-    def update_activity(self, peer: FirebaseUID | WebRTCRelayPeer):
-        """Update last activity timestamp. Call this on every user interaction."""
-        try:
-            if isinstance(peer, FirebaseUID):
-                peer = self._peers[peer]
-            else:
-                peer = self._peers[peer.user_firebase_uid]
-        except KeyError:
-            logger.warning(f"peer {peer} not found")
-            return
-
-        peer.last_activity_time = time.time()
+    def _get_peer_by_connection_id(
+        self, connection_id: ConnectionUUID
+    ) -> WebRTCRelayPeer:
+        """Get a peer by connection ID, raising StateException if not found."""
+        if connection_id not in self._peers:
+            raise StateException(f"connection {connection_id} not found")
+        return self._peers[connection_id]
 
     async def add_peer(
         self,
         offer_sdp: str,
         offer_type: str,
-        user_firebase_uid: FirebaseUID,
+        user_firebase_uid: str,
         user_firebase_email: str,
         video_track: MediaStreamTrack | None = None,
-    ) -> RTCSessionDescription:
-        if user_firebase_uid in self._peers:
-            logger.warning(f"peer {user_firebase_uid} already exists")
-            peer = self._peers.pop(user_firebase_uid)
-            await peer.shutdown()
+    ) -> WebRTCRelayPeer:
+        """Create and add a new peer connection. Returns the peer (use peer.connection_id)."""
 
         peer = await WebRTCRelayPeer.create(
             offer_sdp=offer_sdp,
@@ -101,83 +92,75 @@ class WebRTCRelayPeersManager:
             video_track=video_track,
             on_datachannel_message=self._on_datachannel_message,
         )
-        self._peers[user_firebase_uid] = peer
-        return peer.peer_connection.localDescription
 
-    async def remove_peer(self, peer: FirebaseUID | WebRTCRelayPeer):
-        try:
-            if isinstance(peer, FirebaseUID):
-                peer = self._peers.pop(peer)
-            else:
-                peer = self._peers.pop(peer.user_firebase_uid)
-        except KeyError:
-            logger.warning(f"peer {peer} already closed")
-            return
-        await peer.shutdown()
-        self._reset_subscribed_topics()
+        self._peers[peer.connection_id] = peer
 
-    async def remove_all_peers(self):
-        peers = list(self._peers.values())
-        for peer in peers:
-            await peer.shutdown()
-        self._reset_subscribed_topics()
+        logger.info(
+            f"Added peer {peer.connection_id} for {user_firebase_email}, "
+            f"total connections: {len(self._peers)}"
+        )
+        return peer
 
     async def get_all_peers_subs(self) -> set[str]:
         return self._subscribed_topics_superset
 
-    async def get_peer_subs(self, user_firebase_uid: FirebaseUID) -> set[str]:
-        if user_firebase_uid not in self._peers:
-            logger.warning(f"peer {user_firebase_uid} not found")
-            raise StateException(f"peer {user_firebase_uid} not found")
-        peer = self._peers[user_firebase_uid]
-        return peer.subscribed_topics
+    async def get_connection_subs(self, connection_id: ConnectionUUID) -> set[str]:
+        """Get subscriptions for a specific connection."""
+        peer = self._get_peer_by_connection_id(connection_id)
+        return peer.subscribed_topics.copy()
 
-    async def add_sub_to_peer(self, user_firebase_uid: FirebaseUID, topic: str):
-        if user_firebase_uid not in self._peers:
-            logger.warning(f"peer {user_firebase_uid} not found")
-            return
-        peer = self._peers[user_firebase_uid]
+    async def add_sub_to_connection(
+        self, connection_id: ConnectionUUID, topic: str
+    ) -> None:
+        """Add subscription to a specific connection."""
+        peer = self._get_peer_by_connection_id(connection_id)
         peer.last_activity_time = time.time()
-        if topic in peer.subscribed_topics:
-            return
         peer.subscribed_topics.add(topic)
-        if topic in self._subscribed_topics_superset:
-            return
 
-        self._subscribed_topics_superset.add(topic)
+        if topic not in self._subscribed_topics_superset:
+            self._subscribed_topics_superset.add(topic)
 
-    async def remove_sub_from_peer(self, user_firebase_uid: FirebaseUID, topic: str):
-        if user_firebase_uid not in self._peers:
-            logger.warning(f"peer {user_firebase_uid} not found")
-            return
-        peer = self._peers[user_firebase_uid]
+    async def remove_sub_from_connection(
+        self, connection_id: ConnectionUUID, topic: str
+    ) -> None:
+        """Remove subscription from a specific connection."""
+        peer = self._get_peer_by_connection_id(connection_id)
         peer.last_activity_time = time.time()
-        if topic not in peer.subscribed_topics:
-            return
-        peer.subscribed_topics.remove(topic)
+        peer.subscribed_topics.discard(topic)
+
         self._reset_subscribed_topics()
         if topic in self._subscribed_topics_superset:
-            logger.debug(f"topic {topic} still subscribed by other peers")
+            logger.debug(f"topic {topic} still subscribed by other connections")
             return
 
         logger.info(f"unsubscribing from topic {topic}")
 
     async def broadcast_to_all_peers(self, raw_message: bytes | str):
+        logger.info(f"Broadcasting to {self.num_peers} peers")
+
+        if self.num_peers == 0:
+            logger.warning("No peers to broadcast to!")
+            return
+
         for peer in list(self._peers.values()):
-            if peer.data_channel.readyState != "open":
-                logger.debug(
-                    f"peer {peer.user_firebase_email} has datachannel not open"
+            dc_state = peer.data_channel.readyState
+            logger.info(
+                f"Peer {peer.connection_id} ({peer.user_firebase_email}): "
+                f"datachannel state = {dc_state}"
+            )
+
+            if dc_state != "open":
+                logger.warning(
+                    f"Peer {peer.connection_id} has datachannel not open (state={dc_state})"
                 )
                 continue
 
-            # TODO (swapnil): should activity be updated on outbound messages?
             peer.last_activity_time = time.time()
             try:
-                await self._for_each_peer(
-                    lambda peer: asyncio.to_thread(peer.data_channel.send, raw_message)
-                )
+                peer.data_channel.send(raw_message)
+                logger.info(f"Sent message to peer {peer.connection_id}")
             except Exception:
-                logger.exception(f"Failed to JSON-serialize GO2 message")
+                logger.exception(f"Failed to send to peer {peer.connection_id}")
 
     async def update_video_track(
         self, media_relay: MediaRelay, video_track: MediaStreamTrack
@@ -188,36 +171,56 @@ class WebRTCRelayPeersManager:
 
     async def _for_each_peer(self, func: Callable[[WebRTCRelayPeer], Any]):
         await asyncio.gather(
-            *[asyncio.to_thread(func, peer) for peer in self._peers.values()]
+            *[asyncio.to_thread(func, peer) for peer in list(self._peers.values())]
         )
 
     def _reset_subscribed_topics(self):
-        new_set = set()
-        for peer in self._peers.values():
+        new_set = set[str]()
+        for peer in list(self._peers.values()):
             new_set.update(peer.subscribed_topics)
         self._subscribed_topics_superset = new_set
 
-    async def _monitor_for_idle_peers(self):
+    async def _monitor_peers(self):
         while True:
-            peers_to_remove = []
-            peers = dict(self._peers)
-            for key, peer in peers.items():
+            await asyncio.sleep(10.0)
+
+            idle_peers: list[WebRTCRelayPeer] = []
+            dead_peers: list[WebRTCRelayPeer] = []
+            for peer in list(self._peers.values()):
                 if (
                     time.time() - peer.last_activity_time
                     > self._settings.RELAY_IDLE_TIMEOUT_SECONDS
                 ):
-                    peers_to_remove.append(key)
-                    logger.info(f"removed idle peer {peer.user_firebase_email}")
+                    idle_peers.append(peer)
+                    logger.info(
+                        f"removing idle peer {peer.connection_id} ({peer.user_firebase_email})"
+                    )
+                if peer.is_dead:
+                    dead_peers.append(peer)
+                    logger.info(
+                        f"removing dead peer {peer.connection_id} ({peer.user_firebase_email})"
+                    )
 
+            peers_to_remove = idle_peers + dead_peers
             if len(peers_to_remove) > 0:
-                for key in peers_to_remove:
-                    # its possible the peer was removed between the for loop above and
-                    # the pop operation below, so handle key errors
-                    try:
-                        peer = self._peers.pop(key)
-                    except KeyError:
-                        logger.warning(f"peer {key} not found")
-                        continue
-                    await peer.shutdown()
+                for peer in peers_to_remove:
+                    if peer.connection_id not in self._peers:
+                        logger.debug(f"Peer {peer.connection_id} already removed")
+                        return
+
+                    del self._peers[peer.connection_id]
+                    logger.info(
+                        f"Removed peer {peer.connection_id} "
+                        f"({peer.user_firebase_email})"
+                    )
+
+                    # NOTE: only call shutdown if the peer is idle, otherwise it will be
+                    # called twice
+                    if peer in idle_peers:
+                        await peer.shutdown()
+
                 self._reset_subscribed_topics()
-            await asyncio.sleep(10.0)
+
+                # Notify parent that peers were removed (e.g., to restart video blackhole)
+                if self._on_peer_removed is not None:
+                    await self._on_peer_removed()

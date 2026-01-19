@@ -1,8 +1,9 @@
 import logging
 import typing as t
+from uuid import UUID
 
 import just_robots_firebase_client.firebase_types as fbt
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from just_robots.webrtc_relay.webrtc_dependencies import get_app_state, get_user
 from just_robots.webrtc_relay.webrtc_relay import WebRTCRelay
@@ -13,7 +14,6 @@ from just_robots.webrtc_relay.webrtc_relay_types import (
     ConnectReply,
     DisconnectArgs,
     DisconnectReply,
-    GetSubscriptionsArgs,
     GetSubscriptionsReply,
     RemoveSubscriptionArgs,
     RemoveSubscriptionReply,
@@ -29,6 +29,7 @@ async def connect(
     state: t.Annotated[WebRTCRelay, Depends(get_app_state)],
     user: t.Annotated[fbt.DecodedToken, Depends(get_user)],
 ):
+    logger.info(f"User {user.email} requested to connect to GO2 at {args.robot_ip}")
     await state.connect_to_go2(
         robot_ip=args.robot_ip,
         robot_num=args.robot_num,
@@ -36,7 +37,7 @@ async def connect(
         reconnect=args.reconnect_to_go2,
     )
 
-    logger.info(f"User {user.uid} ({user.email}) successfully connected to GO2")
+    logger.info(f"Connected to GO2 at {args.robot_ip}, requested by user {user.email}")
     return ConnectReply(robot_ip=args.robot_ip)
 
 
@@ -44,9 +45,11 @@ async def connect(
 async def disconnect(
     _args: DisconnectArgs,
     state: t.Annotated[WebRTCRelay, Depends(get_app_state)],
-    _user: t.Annotated[fbt.DecodedToken, Depends(get_user)],
+    user: t.Annotated[fbt.DecodedToken, Depends(get_user)],
 ):
+    logger.info(f"User {user.email} requested to disconnect from GO2")
     await state.disconnect_from_go2()
+    logger.info(f"Disconnected from GO2, requested by user {user.email}")
     return DisconnectReply()
 
 
@@ -57,11 +60,14 @@ async def add_subscription(
     user: t.Annotated[fbt.DecodedToken, Depends(get_user)],
 ):
     """
-    Update topic subscriptions for the current GO2 connection.
-    This will unsubscribe from old topics and subscribe to new ones.
-    Updates activity timestamp.
+    Add a topic subscription for a specific connection.
+    The connection_id is returned from the /webrtc/offer endpoint.
     """
-    await state.add_sub_for_peer(user.uid, args.topic)
+    logger.info(
+        f"User {user.email} adding subscription to {args.topic} "
+        f"for connection {args.connection_id}"
+    )
+    await state.add_sub_for_connection(args.connection_id, args.topic)
     return AddSubscriptionReply()
 
 
@@ -71,17 +77,30 @@ async def remove_subscription(
     state: t.Annotated[WebRTCRelay, Depends(get_app_state)],
     user: t.Annotated[fbt.DecodedToken, Depends(get_user)],
 ):
-    await state.remove_sub_from_peer(user.uid, args.topic)
+    """
+    Remove a topic subscription from a specific connection.
+    The connection_id is returned from the /webrtc/offer endpoint.
+    """
+    logger.info(
+        f"User {user.email} removing subscription from {args.topic} "
+        f"for connection {args.connection_id}"
+    )
+    await state.remove_sub_from_connection(args.connection_id, args.topic)
     return RemoveSubscriptionReply()
 
 
 @router.get("/subscriptions", response_model=GetSubscriptionsReply)
 async def get_subscriptions(
-    _args: GetSubscriptionsArgs,
+    connection_id: t.Annotated[
+        UUID, Query(description="Connection ID from /webrtc/offer")
+    ],
     state: t.Annotated[WebRTCRelay, Depends(get_app_state)],
     user: t.Annotated[fbt.DecodedToken, Depends(get_user)],
 ):
-    """Get the list of topics currently subscribed to."""
+    """Get the list of topics currently subscribed to for a specific connection."""
+    logger.info(
+        f"User {user.email} getting subscriptions for connection {connection_id}"
+    )
     return GetSubscriptionsReply(
-        subscribed_topics=list(await state.get_subs_for_peer(user.uid))
+        subscribed_topics=list(await state.get_subs_for_connection(connection_id))
     )

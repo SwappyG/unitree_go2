@@ -5,7 +5,6 @@ import json
 import logging
 from types import TracebackType
 
-from aiortc import MediaStreamTrack
 from go2_robot_sdk.domain.constants.webrtc_topics import RTC_TOPIC
 from go2_robot_sdk.infrastructure.webrtc.go2_connection import (
     Go2Connection,
@@ -26,16 +25,11 @@ class WebRTCRelayGo2:
     ):
         self._settings = settings
         self._go2: Go2Connection = go2
-        self._go2_video_track: MediaStreamTrack | None = None
         self._subscribed_topics_superset = set[str]()
 
     @property
     def robot_ip(self) -> str:
         return self._go2.robot_ip
-
-    @property
-    def video_track(self) -> MediaStreamTrack | None:
-        return self._go2_video_track
 
     @staticmethod
     async def create(
@@ -54,10 +48,13 @@ class WebRTCRelayGo2:
             robot_num=robot_num,
             token=token,
             on_open=lambda: logger.info("GO2 data channel open"),
+            on_message=on_message,
+            on_video_frame=on_video_frame,
+            decode_message=True,
+            decode_lidar=True,
         )
         self = WebRTCRelayGo2(settings, go2)
-        go2.on_message = on_message
-        go2.on_video_frame = on_video_frame
+        # this has to be after construction, because we need `self`
         go2.on_validated = self._on_go2_validated
 
         await go2.connect()
@@ -91,36 +88,22 @@ class WebRTCRelayGo2:
         await self.shutdown()
 
     async def shutdown(self):
-        if self._go2_video_track is not None:
-            await asyncio.to_thread(self._go2_video_track.stop)
         await self._go2.disconnect()
-        self._go2_video_track = None
         self._subscribed_topics_superset = set()
 
     async def send_subscribe_message(self, topic: str):
-        await asyncio.to_thread(
-            self._go2.data_channel.send,
-            json.dumps({"type": "subscribe", "topic": topic}),
-        )
+        await self.publish_json_str(json.dumps({"type": "subscribe", "topic": topic}))
 
     async def send_unsubscribe_message(self, topic: str):
-        await asyncio.to_thread(
-            self._go2.data_channel.send,
-            json.dumps({"type": "unsubscribe", "topic": topic}),
-        )
+        await self.publish_json_str(json.dumps({"type": "unsubscribe", "topic": topic}))
 
     async def publish_json_str(self, json_str: str):
-        await asyncio.to_thread(self._go2.publish_json_str, json_str)
+        await self._go2.publish_json_str(json_str)
 
     async def _on_go2_validated(self, _robot_id: str):
         logger.info("on validated called")
         try:
             await self._go2.disableTrafficSaving(True)
-            for topic in list(self._subscribed_topics_superset):
-                await asyncio.to_thread(
-                    self._go2.data_channel.send,
-                    json.dumps({"type": "subscribe", "topic": topic}),
-                )
-            await asyncio.to_thread(self._go2.publish, RTC_TOPIC["ULIDAR_SWITCH"], "on")
+            await self._go2.publish(topic=RTC_TOPIC["ULIDAR_SWITCH"], data="on")
         except Exception:
             logger.exception(f"Error in validated callback")

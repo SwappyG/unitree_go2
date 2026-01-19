@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from go2_robot_sdk.domain.constants.webrtc_topics import RTC_TOPIC
 from pydantic import BaseModel
 
@@ -24,6 +26,7 @@ class ConnectReply(BaseModel):
 
 
 class AddSubscriptionArgs(BaseModel):
+    connection_id: UUID
     topic: str
 
 
@@ -32,14 +35,11 @@ class AddSubscriptionReply(BaseModel):
 
 
 class RemoveSubscriptionArgs(BaseModel):
+    connection_id: UUID
     topic: str
 
 
 class RemoveSubscriptionReply(BaseModel):
-    pass
-
-
-class GetSubscriptionsArgs(BaseModel):
     pass
 
 
@@ -63,3 +63,4 @@ class OfferArgs(BaseModel):
 class OfferReply(BaseModel):
     offer_sdp: str
     offer_type: str
+    connection_id: UUID

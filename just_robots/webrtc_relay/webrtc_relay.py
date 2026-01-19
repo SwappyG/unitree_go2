@@ -6,19 +6,28 @@ from types import TracebackType
 from typing import Any, TypeAlias
 
 from aiortc import MediaStreamTrack, RTCSessionDescription
-from aiortc.contrib.media import MediaRelay
+from aiortc.contrib.media import MediaBlackhole, MediaRelay
 from go2_robot_sdk.domain.entities.robot_data import RobotData
 from just_robots_firebase_client.firebase_client import FirebaseClient
 
 from just_robots.utils.settings import JustRobotsSettings, get_just_robots_settings
 from just_robots.webrtc_relay.webrtc_relay_go2 import WebRTCRelayGo2
-from just_robots.webrtc_relay.webrtc_relay_peer import WebRTCRelayPeer
-from just_robots.webrtc_relay.webrtc_relay_peers_manager import WebRTCRelayPeersManager
+from just_robots.webrtc_relay.webrtc_relay_peers_manager import (
+    ConnectionUUID,
+    WebRTCRelayPeersManager,
+)
 
 logger = logging.getLogger(__name__)
 
-
 FirebaseUID: TypeAlias = str
+
+
+@dataclasses.dataclass
+class PeerOfferResult:
+    """Result of processing a peer offer."""
+
+    sdp: RTCSessionDescription | None
+    connection_id: ConnectionUUID
 
 
 class WebRTCRelay:
@@ -33,13 +42,15 @@ class WebRTCRelay:
             self._settings = settings
 
         self._firebase_client = firebase_client
-        self._media_relay: MediaRelay = dataclasses.field(default_factory=MediaRelay)
+        self._media_relay: MediaRelay = MediaRelay()
         self._go2: WebRTCRelayGo2 | None = None
         self._go2_video_track: MediaStreamTrack | None = None
+        self._video_blackhole: MediaBlackhole | None = None
         self._peers = WebRTCRelayPeersManager(
             settings=self._settings,
             media_relay=self._media_relay,
             on_datachannel_message=self._on_datachannel_message,
+            on_peer_removed=self._on_peer_removed,
         )
 
         self._no_peers_monitor_task = asyncio.create_task(self._no_peers_monitor())
@@ -61,6 +72,9 @@ class WebRTCRelay:
             await self._no_peers_monitor_task
         except asyncio.CancelledError:
             pass
+
+        if self._video_blackhole is not None:
+            await self._video_blackhole.stop()
 
         await self._peers.shutdown()
         if self._go2 is not None:
@@ -105,39 +119,59 @@ class WebRTCRelay:
         offer_type: str,
         user_firebase_uid: FirebaseUID,
         user_firebase_email: str,
-    ) -> RTCSessionDescription:
-        return await self._peers.add_peer(
+    ) -> PeerOfferResult:
+        video_track = self._go2_video_track
+        if video_track is not None:
+            video_track = self._media_relay.subscribe(video_track)
+
+        peer = await self._peers.add_peer(
             offer_sdp=offer_sdp,
             offer_type=offer_type,
             user_firebase_uid=user_firebase_uid,
             user_firebase_email=user_firebase_email,
-            video_track=self._go2.video_track if self._go2 is not None else None,
+            video_track=video_track,
         )
 
-    async def remove_peer(self, peer: FirebaseUID | WebRTCRelayPeer):
-        await self._peers.remove_peer(peer)
+        # This will stop the video black hole, since we have a peer consuming the video
+        await self._update_video_blackhole()
 
-    async def remove_all_peers(self):
-        await self._peers.remove_all_peers()
+        return PeerOfferResult(
+            sdp=peer.peer_connection.localDescription,
+            connection_id=peer.connection_id,
+        )
 
-    async def get_subs_for_peer(self, user_firebase_uid: FirebaseUID) -> set[str]:
-        return await self._peers.get_peer_subs(user_firebase_uid)
+    async def get_subs_for_connection(self, connection_id: ConnectionUUID) -> set[str]:
+        return await self._peers.get_connection_subs(connection_id)
 
-    async def add_sub_for_peer(self, user_firebase_uid: FirebaseUID, topic: str):
+    async def add_sub_for_connection(self, connection_id: ConnectionUUID, topic: str):
         if self._go2 is None:
             logger.warning("GO2 connection not established")
             return
-        await self._peers.add_sub_to_peer(user_firebase_uid, topic)
+        await self._peers.add_sub_to_connection(connection_id, topic)
         await self._go2.send_subscribe_message(topic)
 
-    async def remove_sub_from_peer(self, user_firebase_uid: FirebaseUID, topic: str):
+    async def remove_sub_from_connection(
+        self, connection_id: ConnectionUUID, topic: str
+    ):
         if self._go2 is None:
             logger.warning("GO2 connection not established")
             return
-        await self._peers.remove_sub_from_peer(user_firebase_uid, topic)
+        await self._peers.remove_sub_from_connection(connection_id, topic)
         await self._go2.send_unsubscribe_message(topic)
 
+    async def _on_peer_removed(self) -> None:
+        """Called by peers manager when peers are removed (e.g., due to idle timeout)."""
+        await self._update_video_blackhole()
+
     async def _on_go2_message(self, robot_data: RobotData):
+        msg_type = type(robot_data.raw_message).__name__
+        msg_preview = (
+            str(robot_data.raw_message)[:100] if robot_data.raw_message else "None"
+        )
+        logger.info(
+            f"Received message from GO2: type={msg_type}, preview={msg_preview}"
+        )
+
         if isinstance(robot_data.raw_message, (bytes, str)):
             await self._peers.broadcast_to_all_peers(robot_data.raw_message)
         else:
@@ -149,13 +183,47 @@ class WebRTCRelay:
         when the PC calls /offer. We'll relay via MediaRelay for multi-subscriber safety.
         """
         logger.info(f"received go2 video track, {track=}")
+
+        # Stop existing blackhole if any
+        await self._stop_video_blackhole()
+
         if self._go2_video_track is not None:
             # TODO (swapnil): determine if the proxy tracks need to be manually stopped
             self._go2_video_track.stop()
             self._media_relay = MediaRelay()
 
         self._go2_video_track = track
+
+        # Start blackhole if no peers are connected
+        await self._update_video_blackhole()
         await self._peers.update_video_track(self._media_relay, track)
+
+    async def _start_video_blackhole(self) -> None:
+        """Start the blackhole to consume video frames and prevent buffering."""
+        if self._video_blackhole is not None or self._go2_video_track is None:
+            return
+
+        logger.debug("Starting video blackhole (no peers connected)")
+        drain_track = self._media_relay.subscribe(self._go2_video_track)
+        self._video_blackhole = MediaBlackhole()
+        self._video_blackhole.addTrack(drain_track)
+        await self._video_blackhole.start()
+
+    async def _stop_video_blackhole(self) -> None:
+        """Stop the blackhole."""
+        if self._video_blackhole is None:
+            return
+
+        logger.debug("Stopping video blackhole")
+        await self._video_blackhole.stop()
+        self._video_blackhole = None
+
+    async def _update_video_blackhole(self) -> None:
+        """Start or stop the blackhole based on whether peers are connected."""
+        if self._peers.num_peers == 0:
+            await self._start_video_blackhole()
+        else:
+            await self._stop_video_blackhole()
 
     async def _on_datachannel_message(self, message: Any):
         """handler for messages inbound from relay'ed webrtc connection"""
@@ -176,7 +244,7 @@ class WebRTCRelay:
         time_since_no_peers = time.time()
         while True:
             current_time = time.time()
-            if self._peers.num_peers() == 0:
+            if self._peers.num_peers == 0:
                 if (
                     current_time - time_since_no_peers
                     > self._settings.RELAY_NO_PEERS_TIMEOUT_SECONDS

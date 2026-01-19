@@ -18,16 +18,20 @@ async def offer(
     state: t.Annotated[WebRTCRelay, Depends(get_app_state)],
     user: t.Annotated[fbt.DecodedToken, Depends(get_user)],
 ):
-    rtc_session_description = await state.process_peer_offer(
+    result = await state.process_peer_offer(
         offer_sdp=args.offer_sdp,
         offer_type=args.offer_type,
         user_firebase_uid=user.uid,
         user_firebase_email=user.email or "",
     )
 
+    if result.sdp is None:
+        raise RuntimeError("Failed to create SDP answer")
+
     return OfferReply(
-        offer_sdp=rtc_session_description.sdp,
-        offer_type=rtc_session_description.type,
+        offer_sdp=result.sdp.sdp,
+        offer_type=result.sdp.type,
+        connection_id=result.connection_id,
     )
 
 

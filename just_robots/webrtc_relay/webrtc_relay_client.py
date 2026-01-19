@@ -2,10 +2,10 @@
 # We"re pinned to a very specific version of aiortc, 1.9. 1.11 doesn"t work.
 # 1.13 or higher has conflicts with v0.9 of forked aioice. This should be resolved at some point
 import asyncio
-import contextlib
 import json
 import logging
 import typing as t
+from uuid import UUID
 
 import go2_robot_sdk.infrastructure.webrtc.go2_message_parsers as go2_parsers
 import httpx
@@ -27,9 +27,9 @@ from just_robots_firebase_client.firebase_client_authenticated import (
     FirebaseClientAuthenticated,
 )
 
-# from just_robots.webrtc_relay.ice_server_config import get_ice_servers_list, get_rtc_configuration
 import just_robots.webrtc_relay.webrtc_relay_types as wrt
 from just_robots.fastapi_utils.fastapi_exceptions import StateException, raise_if_error
+from just_robots.webrtc_relay.webrtc_relay_types import GetSubscriptionsReply
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,18 +37,6 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
-
-KEYBOARD_AVAILABLE = True
-
-TOPICS_TO_SUBSCRIBE_TO = {
-    # RTC_TOPIC["MULTIPLE_STATE"],
-    # RTC_TOPIC["SPORT_MOD_STATE"],
-    # RTC_TOPIC["LOW_STATE"],
-    # RTC_TOPIC["ULIDAR"],
-    # RTC_TOPIC["ULIDAR_ARRAY"],
-    # RTC_TOPIC["ULIDAR_STATE"],
-    RTC_TOPIC["ROBOTODOM"],
-}
 
 
 class WebRTCRelayClient:
@@ -71,6 +59,7 @@ class WebRTCRelayClient:
         self._data_decoder = WebRTCDataDecoder(enable_lidar_decoding=True)
         self._peer_connection = None
         self._peer_datachannel = None
+        self._connection_id: UUID | None = None  # Set after start_relay
         self._shutdown_requested = False  # Flag to signal shutdown
 
     async def __aenter__(self):
@@ -85,12 +74,6 @@ class WebRTCRelayClient:
 
         # Set shutdown flag to break the infinite loop
         self._shutdown_requested = True
-
-        # Disconnect from GO2 via relay server
-        try:
-            await self._disconnect_from_go2()
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"Error disconnecting from GO2 during shutdown: {e}")
 
         # Close peer connection
         if self._peer_connection:
@@ -114,8 +97,10 @@ class WebRTCRelayClient:
                 self._peer_datachannel = None
 
         # Close HTTP client
-        with contextlib.suppress(Exception):
+        try:
             await self._client.aclose()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Error closing HTTP client during shutdown: {e}")
 
         logger.info("WebRTC relay client shutdown complete")
 
@@ -125,7 +110,9 @@ class WebRTCRelayClient:
     async def disconnect_from_go2(self):
         await self._disconnect_from_go2()
 
-    async def start_relay(self, rtc_configuration: RTCConfiguration | None = None):
+    async def start_relay(
+        self, rtc_configuration: RTCConfiguration | None = None
+    ) -> None:
         logger.info(f"establishing WebRTC connection to webrtc relay server")
 
         peer = RTCPeerConnection(configuration=rtc_configuration)
@@ -136,8 +123,16 @@ class WebRTCRelayClient:
             ),
         )
         peer.on("track", self._on_peer_track)
-        peer.on("datachannel", self._on_peer_datachannel)
         _ = peer.addTransceiver("video", direction="recvonly")
+
+        # Out-of-band data channel: both sides create with same id and negotiated=True
+        data_channel = peer.createDataChannel("data", negotiated=True, id=0)
+        data_channel.on(
+            "open",
+            lambda: logger.info(f"Client data channel is now open"),
+        )
+        data_channel.on("message", self._on_peer_datachannel_message)
+        self._peer_datachannel = data_channel
 
         # Create offer (no trickle)
         peer_offer = await peer.createOffer()
@@ -152,7 +147,7 @@ class WebRTCRelayClient:
         )
         resp = await self._client.post(
             f"{self.url}/webrtc/offer",
-            json=peer_offer_args.model_dump(),
+            json=peer_offer_args.model_dump(mode="json"),
             headers=await self._get_auth_headers(),
         )
         if resp.status_code != status.HTTP_200_OK:
@@ -161,8 +156,9 @@ class WebRTCRelayClient:
             raise_if_error(err_json)
 
         answer = wrt.OfferReply.model_validate(resp.json())
+        self._connection_id = answer.connection_id
         logger.info(
-            f"received answer from webrtc relay server. {answer=}. "
+            f"received answer from webrtc relay server. connection_id={self._connection_id}. "
             f"Connection established, waiting for data and video channels."
         )
         await peer.setRemoteDescription(
@@ -310,7 +306,7 @@ class WebRTCRelayClient:
             )
         )
 
-    async def send_json_command(
+    async def send_raw_json_command_direct_to_go2(
         self, command_str: str, try_to_validate: bool = True
     ) -> None:
         """
@@ -363,32 +359,39 @@ class WebRTCRelayClient:
         # Send the command JSON string
         self._peer_datachannel.send(command_str)
 
-    async def get_subscriptions(self) -> set[str]:
+    async def get_subscriptions(self) -> list[str]:
         """
-        Get the list of topics subscribed to.
-        Returns empty list if no topics are set.
+        Get the list of topics subscribed to for this connection.
+        Requires start_relay() to have been called first.
+        Returns empty set if no topics are subscribed.
         """
-        # Try to fetch from server
+        if self._connection_id is None:
+            raise StateException("call start_relay before getting subscriptions")
 
         r = await self._client.get(
-            f"{self.url}/go2/subscriptions", headers=await self._get_auth_headers()
+            f"{self.url}/go2/subscriptions",
+            params={"connection_id": str(self._connection_id)},
+            headers=await self._get_auth_headers(),
         )
         raise_if_error(r)
 
-        data = r.json()
-        self._topics_to_subscribe_to = set(data.get("subscribed_topics", set()))
-        return self._topics_to_subscribe_to
+        return GetSubscriptionsReply.model_validate(r.json()).subscribed_topics
 
     async def add_topic_to_subscriptions(self, topic: str):
         """
         Add a topic to the list of topics subscribed to.
+        Requires start_relay() to have been called first.
         """
         if not topic:
             raise ValueError("topic cannot be empty")
+        if self._connection_id is None:
+            raise StateException("call start_relay before adding subscriptions")
 
         r = await self._client.post(
             f"{self.url}/go2/add-subscription",
-            json=wrt.AddSubscriptionArgs(topic=topic).model_dump(),
+            json=wrt.AddSubscriptionArgs(
+                connection_id=self._connection_id, topic=topic
+            ).model_dump(mode="json"),
             headers=await self._get_auth_headers(),
         )
         raise_if_error(r)
@@ -396,22 +399,22 @@ class WebRTCRelayClient:
     async def remove_topic_from_subscriptions(self, topic: str):
         """
         Remove a topic from the list of topics subscribed to.
+        Requires start_relay() to have been called first.
         """
-        if topic not in self._topics_to_subscribe_to:
-            return
+        if self._connection_id is None:
+            raise StateException("call start_relay before removing subscriptions")
 
         r = await self._client.post(
             f"{self.url}/go2/remove-subscription",
-            json=wrt.RemoveSubscriptionArgs(topic=topic).model_dump(),
+            json=wrt.RemoveSubscriptionArgs(
+                connection_id=self._connection_id, topic=topic
+            ).model_dump(mode="json"),
             headers=await self._get_auth_headers(),
         )
         raise_if_error(r)
-        return
 
     async def _get_auth_headers(self) -> dict[str, str]:
         """Get Authorization headers with Firebase ID token."""
-        if self._firebase_client is None:
-            return {}
         id_token = await self._firebase_client.get_id_token()
         return {"Authorization": f"Bearer {id_token}"}
 
@@ -420,8 +423,6 @@ class WebRTCRelayClient:
             f"instructing webrtc relay server to connect to the go2 at {self.robot_config=}"
         )
 
-        # Build ConnectArgs - if topics_to_subscribe_to is None, don't pass it
-        # The server will use its default (TOPICS_TO_SUBSCRIBE_TO)
         connect_args = wrt.ConnectArgs(
             robot_ip=self.robot_config.robot_ip_list[0],
             robot_num=1,  # TODO (swapnil) - pipe this properly
@@ -430,7 +431,7 @@ class WebRTCRelayClient:
 
         connect_reply = await self._client.post(
             f"{self.url}/go2/connect",
-            json=connect_args.model_dump(),
+            json=connect_args.model_dump(mode="json"),
             headers=await self._get_auth_headers(),
         )
 

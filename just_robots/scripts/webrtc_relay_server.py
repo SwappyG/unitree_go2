@@ -1,12 +1,10 @@
-import asyncio
-import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 from just_robots_firebase_client.firebase_client import FirebaseClient
 
 from just_robots.fastapi_utils.fastapi_server_utils import make_app
+from just_robots.utils.logging import logging
 from just_robots.utils.package_paths import get_package_root
 from just_robots.utils.settings import get_just_robots_settings
 from just_robots.webrtc_relay.webrtc_relay import WebRTCRelay
@@ -14,13 +12,9 @@ from just_robots.webrtc_relay.webrtc_relay_endpoint_go2 import router as go2_rou
 from just_robots.webrtc_relay.webrtc_relay_endpoint_webrtc import (
     router as webrtc_router,
 )
-from just_robots.fastapi_utils.fastapi_exceptions import StateException
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 @asynccontextmanager
