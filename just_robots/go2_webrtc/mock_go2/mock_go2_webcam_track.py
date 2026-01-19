@@ -16,7 +16,9 @@ class MockGo2WebcamVideoTrack(MediaStreamTrack):
 
     kind = "video"
 
-    def __init__(self, camera_index: int = 0, width: int = 640, height: int = 480, fps: int = 30):
+    def __init__(
+        self, camera_index: int = 0, width: int = 640, height: int = 480, fps: int = 30
+    ):
         super().__init__()
         self.camera_index = camera_index
         self.width = width
@@ -88,7 +90,9 @@ class MockGo2WebcamVideoTrack(MediaStreamTrack):
                 if frame is not None:
                     cv2.imshow(window_name, frame)
                     frame_count += 1
-                    if frame_count % 30 == 0:  # Log every 30 frames (~1 second at 30fps)
+                    if (
+                        frame_count % 30 == 0
+                    ):  # Log every 30 frames (~1 second at 30fps)
                         logger.debug(
                             f"Displayed {frame_count} frames, latest frame shape: {frame.shape}"
                         )
@@ -112,12 +116,15 @@ class MockGo2WebcamVideoTrack(MediaStreamTrack):
         """Read frame from webcam and return as VideoFrame."""
         # Start background frame reading if not already started
         if self._frame_reading_task is None or (
-            hasattr(self._frame_reading_task, "done") and self._frame_reading_task.done()
+            hasattr(self._frame_reading_task, "done")
+            and self._frame_reading_task.done()
         ):
             if self._frame_reading_running:
                 try:
                     loop = asyncio.get_running_loop()
-                    self._frame_reading_task = loop.create_task(self._frame_reading_loop())
+                    self._frame_reading_task = loop.create_task(
+                        self._frame_reading_loop()
+                    )
                     logger.info("Started background frame reading task from recv()")
                 except RuntimeError:
                     pass
@@ -150,7 +157,10 @@ class MockGo2WebcamVideoTrack(MediaStreamTrack):
                 if self.cap.isOpened():
                     ret, frame = self.cap.read()
                     if ret:
-                        if frame.shape[1] != self.width or frame.shape[0] != self.height:
+                        if (
+                            frame.shape[1] != self.width
+                            or frame.shape[0] != self.height
+                        ):
                             frame = cv2.resize(frame, (self.width, self.height))
                         img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                         # Update latest frame for display
@@ -172,13 +182,16 @@ class MockGo2WebcamVideoTrack(MediaStreamTrack):
     def _start_frame_reading(self):
         """Start background task to continuously read frames from webcam."""
         if self._frame_reading_task is None or (
-            hasattr(self._frame_reading_task, "done") and self._frame_reading_task.done()
+            hasattr(self._frame_reading_task, "done")
+            and self._frame_reading_task.done()
         ):
             self._frame_reading_running = True
             try:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
-                    self._frame_reading_task = loop.create_task(self._frame_reading_loop())
+                    self._frame_reading_task = loop.create_task(
+                        self._frame_reading_loop()
+                    )
                     logger.info("Started background frame reading task")
                 else:
                     # If no event loop is running, we'll start it when recv() is first called
@@ -230,7 +243,9 @@ class MockGo2WebcamVideoTrack(MediaStreamTrack):
         """Start the display thread."""
         if self._display_thread is None or not self._display_thread.is_alive():
             self._display_enabled = True
-            self._display_thread = threading.Thread(target=self._display_loop, daemon=True)
+            self._display_thread = threading.Thread(
+                target=self._display_loop, daemon=True
+            )
             self._display_thread.start()
             logger.info("Started webcam display window")
 
