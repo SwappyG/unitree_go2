@@ -8,16 +8,17 @@ import uvicorn
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import PlainTextResponse
 
-from just_robots.utils.logging import logging
 from just_robots.go2_webrtc.mock_go2.mock_go2 import MockGo2
+from just_robots.utils.logging import logging
+from just_robots.utils.package_paths import get_package_root
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
-
-# ---------------------------------------------------------------------------
-# FastAPI app with lifespan
-# ---------------------------------------------------------------------------
+# Path to lidar dump file (optional, for testing lidar data)
+LIDAR_DUMP_PATH = (
+    get_package_root() / "go2_webrtc" / "mock_go2" / "data" / "lidar_dump_sample.txt"
+)
 
 
 @asynccontextmanager
@@ -29,7 +30,11 @@ async def lifespan(app: FastAPI):
     - stop it when app shuts down
     """
     logger.info("Starting MockGo2 server")
-    mock_go2 = MockGo2()
+
+    # Check if lidar dump file exists
+    mock_go2 = MockGo2(
+        lidar_dump_filepath=LIDAR_DUMP_PATH if LIDAR_DUMP_PATH.exists() else None
+    )
     logger.info("MockGo2 created")
     app.state.mock_go2 = mock_go2  # stash it on app.state
 
@@ -59,30 +64,6 @@ async def con_notify(
     - Returns ConNotifyReply(code=0, msg="ok", data1=<plain_text_str>)
     """
     return await mock_go2.on_con_notify()
-
-
-# @app.post(
-#     "/con_ing/{path_ending}",
-#     response_class=PlainTextResponse,
-# )
-# async def con_ing(
-#     path_ending: str,
-#     args: ConIngArgs,
-#     mock_go2: t.Annotated[MockGo2, Depends(get_mock_go2)],
-# ) -> str:
-#     """
-#     Mirrors MockGo2.on_con_ing
-
-#     - path_ending comes from URL
-#     - offer_json = args.data1
-#     - aes_key    = args.data2
-#     - returns AES-encrypted answer as plain text
-#     """
-#     return await mock_go2.on_con_ing(
-#         path_ending=path_ending,
-#         offer_json=args.data1,
-#         aes_key=args.data2,
-#     )
 
 
 @app.post(
@@ -121,4 +102,9 @@ async def con_ing_underscore(
 
 
 if __name__ == "__main__":
-    uvicorn.run("just_robots.scripts.mock_go2_server:app", host="127.0.0.1", port=9991, reload=False)
+    uvicorn.run(
+        "just_robots.scripts.mock_go2_server:app",
+        host="127.0.0.1",
+        port=9991,
+        reload=False,
+    )
