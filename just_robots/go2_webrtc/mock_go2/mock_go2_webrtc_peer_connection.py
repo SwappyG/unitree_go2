@@ -238,8 +238,6 @@ class MockGo2WebRTCPeerConnection:
                     # No subscriptions yet, just wait
                     continue
 
-                logger.info(f"Publishing to {len(subscriptions)} subscriptions")
-
                 for topic in subscriptions:
                     maker = go2m.TOPIC_TO_MESSAGE_TYPE.get(topic, None)
                     if maker is None:
@@ -250,10 +248,8 @@ class MockGo2WebRTCPeerConnection:
                         msg = MessageMessage(
                             topic=topic, data=maker().model_dump()
                         ).model_dump_json()
-                        logger.info(f"Sending message to topic {topic}: {msg[:100]}...")
                         async with publish_lock:
                             channel.send(msg)
-                        logger.info(f"Message sent to topic {topic}")
                     except Exception as e:  # noqa: BLE001
                         logger.warning(f"send failed for {topic}: {e}")
         except Exception as ex:
@@ -289,7 +285,6 @@ class MockGo2WebRTCPeerConnection:
                     try:
                         async with publish_lock:
                             channel.send(lidar_frame)
-                        logger.debug("Sent lidar frame")
                     except Exception as e:  # noqa: BLE001
                         logger.warning(f"failed to send lidar frame, {e=}")
         except Exception as ex:

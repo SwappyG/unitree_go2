@@ -1,11 +1,11 @@
 import enum
 from http import HTTPStatus
 from json.decoder import JSONDecodeError
-from pprint import pformat
 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from httpx import Response as HttpxResponse
+from pydantic import BaseModel, ValidationError
 from requests import Response
 
 
@@ -65,6 +65,11 @@ class ExceptionTypes(str, enum.Enum):
     UNKNOWN_ERROR = "unknown_error"
 
 
+class ExceptionData(BaseModel, use_enum_values=True):
+    detail: str | None = None
+    exception_type: ExceptionTypes = ExceptionTypes.UNKNOWN_ERROR
+
+
 def make_json_response(status_code: int, exception: Exception) -> JSONResponse:
     if isinstance(exception, KeyError):
         exception_type = ExceptionTypes.KEY_ERROR.value
@@ -108,58 +113,62 @@ def make_json_response(status_code: int, exception: Exception) -> JSONResponse:
     )
 
 
+def parse_exception_data(resp: Response | HttpxResponse | bytes | str) -> ExceptionData:
+    if isinstance(resp, Response | HttpxResponse):
+        try:
+            return ExceptionData.model_validate(resp.json())
+        except (JSONDecodeError, ValidationError):
+            return ExceptionData(detail=resp.text)
+
+    if isinstance(resp, bytes):
+        resp = resp.decode("utf-8")
+
+    try:
+        return ExceptionData.model_validate_json(resp)
+    except (JSONDecodeError, ValidationError):
+        return ExceptionData(detail=resp)
+    except Exception:  # noqa: BLE001
+        return ExceptionData(detail=resp)
+
+
 def raise_if_error(resp: Response | HttpxResponse) -> None:
     """checks the response object for an error. If there is one, converts it to a
     proper python exception and raises it"""
     if resp.status_code == HTTPStatus.OK:
         return None
 
-    exception_type = ExceptionTypes.UNKNOWN_ERROR
-    exception_value: str = resp.text
-    try:
-        resp_json = resp.json()
-        if isinstance(resp_json, dict):
-            if "detail" in resp_json:
-                if isinstance(resp_json["detail"], str):
-                    exception_value = str(resp_json["detail"])
-                else:
-                    exception_value = pformat(exception_value, indent=2)
-            if "exception_type" in resp_json:
-                if isinstance(resp_json["exception_type"], str):
-                    exception_type = ExceptionTypes(resp_json["exception_type"])
-    except JSONDecodeError:
-        pass
+    exception_data = parse_exception_data(resp)
 
     match resp.status_code:
         case 403:
-            raise PermissionError(exception_value)
+            raise PermissionError(exception_data.detail)
         case 404:
-            raise NotFoundException(exception_value)
+            raise NotFoundException(exception_data.detail or "")
         case 409:
-            match exception_type:
+            match exception_data.exception_type:
                 case ExceptionTypes.STATE_EXCEPTION:
-                    raise StateException(exception_value)
+                    raise StateException(exception_data.detail or "")
                 case ExceptionTypes.PREEMPTED_EXCEPTION:
-                    raise PreemptedException(exception_value)
+                    raise PreemptedException(exception_data.detail or "")
                 case _:
-                    raise StateException(exception_value)
+                    raise StateException(exception_data.detail or "")
         case 422:
-            match exception_type:
+            match exception_data.exception_type:
                 case ExceptionTypes.INDEX_ERROR:
-                    raise IndexError(exception_value)
+                    raise IndexError(exception_data.detail)
                 case ExceptionTypes.VALUE_ERROR:
-                    raise ValueError(exception_value)
+                    raise ValueError(exception_data.detail)
                 case ExceptionTypes.KEY_ERROR:
-                    raise KeyError(exception_value)
+                    raise KeyError(exception_data.detail)
                 case ExceptionTypes.REQUEST_VALIDATION_ERROR:
-                    raise ValueError(exception_value)
+                    raise ValueError(exception_data.detail)
                 case ExceptionTypes.UNKNOWN_ERROR:
-                    raise ValueError(exception_value)
+                    raise ValueError(exception_data.detail)
                 case _:
-                    raise ValueError(exception_value)
+                    raise ValueError(exception_data.detail)
         case 500:
-            raise RuntimeError(exception_value)
+            raise RuntimeError(exception_data.detail)
         case 504:
-            raise TimeoutError(exception_value)
+            raise TimeoutError(exception_data.detail)
         case _:
-            raise RuntimeError(exception_value)
+            raise RuntimeError(exception_data.detail)
