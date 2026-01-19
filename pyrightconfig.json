@@ -3,6 +3,7 @@
     "**/venv",
     "**/__pycache__",
     "**/.github/**",
+    ".cursorrules",
 
     "go2_ros2_sdk/coco_detector/**",
     "go2_ros2_sdk/docker/**",
